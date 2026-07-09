@@ -1499,9 +1499,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             JSObject ret = new JSObject();
             ret.put("success", true);
             appendAudioOutputStatus(ret);
-            if (voiceCallService == null) {
-                ret.put("audioOutput", output);
-            }
+            ret.put("audioOutput", output);
             call.resolve(ret);
         } catch (Exception e) {
             Log.e(TAG, "Error setting audio output", e);
