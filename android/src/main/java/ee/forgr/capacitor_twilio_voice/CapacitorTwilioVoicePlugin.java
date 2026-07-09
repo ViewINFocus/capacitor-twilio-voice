@@ -49,7 +49,6 @@ import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.twilio.audioswitch.AudioDevice;
-import com.twilio.audioswitch.AudioSwitch;
 import com.twilio.voice.Call;
 import com.twilio.voice.CallException;
 import com.twilio.voice.CallInvite;
@@ -97,7 +96,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private Map<UUID, Call> callsByUuid = new HashMap<>();
     private Call activeCall;
 
-    private AudioSwitch audioSwitch;
     private PowerManager.WakeLock proximityWakeLock;
     private boolean proximityMonitoringEnabled = false;
 
@@ -139,8 +137,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     // Voice Call Service
     private VoiceCallService voiceCallService;
     private boolean isServiceBound = false;
-    private final List<AudioDevice> availableAudioDevicesSnapshot = new ArrayList<>();
-    private AudioDevice selectedAudioDevice;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -238,6 +234,15 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             activeCallInvites.remove(callInvite.getCallSid());
             dismissIncomingCallNotification();
         }
+
+        @Override
+        public void onAudioOutputChanged(String outputType) {
+            JSObject data = new JSObject();
+            data.put("audioOutput", outputType);
+            data.put("outputType", outputType);
+            data.put("availableAudioOutputs", buildAvailableAudioOutputs());
+            notifyListeners("audioOutputChanged", data);
+        }
     };
 
     public static CapacitorTwilioVoicePlugin getInstance() {
@@ -288,7 +293,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             return voiceCallService.getAvailableAudioDevicesSnapshot();
         }
 
-        return new ArrayList<>(availableAudioDevicesSnapshot);
+        return new ArrayList<>();
     }
 
     @Nullable
@@ -297,7 +302,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             return voiceCallService.getSelectedAudioDevice();
         }
 
-        return selectedAudioDevice;
+        return null;
     }
 
     @SuppressLint("WakelockTimeout")
@@ -349,9 +354,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         // Initialize FCM and register for push notifications
         initializeFCM();
-
-        // Initialize AudioSwitch
-        initializeAudioSwitch();
 
         // Initialize notification system
         initializeNotifications();
@@ -483,12 +485,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         super.handleOnDestroy();
-
-        // Clean up AudioSwitch
-        if (audioSwitch != null) {
-            audioSwitch.stop();
-            audioSwitch = null;
-        }
 
         // Clean up ringtone and notifications
         stopRingtone();
@@ -775,23 +771,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         Voice.register(accessToken, Voice.RegistrationChannel.FCM, fcmToken, registrationListener);
     }
 
-    private void initializeAudioSwitch() {
-        audioSwitch = new AudioSwitch(getSafeContext().getApplicationContext(), null, true);
-        audioSwitch.start((audioDevices, selectedDevice) -> {
-            availableAudioDevicesSnapshot.clear();
-            availableAudioDevicesSnapshot.addAll(audioDevices);
-            selectedAudioDevice = selectedDevice;
-            Log.d(TAG, "Available audio devices: " + audioDevices.size());
-            for (AudioDevice device : audioDevices) {
-                Log.d(TAG, "Available device: " + device.getName());
-            }
-            if (selectedDevice != null) {
-                Log.d(TAG, "Selected audio device: " + selectedDevice.getName());
-            }
-            return kotlin.Unit.INSTANCE;
-        });
-    }
-
     @PluginMethod
     public void login(PluginCall call) {
         String token = call.getString("accessToken");
@@ -848,11 +827,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         activeCallInvites.clear();
         activeCall = null;
         setProximityMonitoringEnabled(false);
-
-        // Deactivate AudioSwitch
-        if (audioSwitch != null) {
-            audioSwitch.deactivate();
-        }
 
         Log.d(TAG, "Logout completed successfully");
 
