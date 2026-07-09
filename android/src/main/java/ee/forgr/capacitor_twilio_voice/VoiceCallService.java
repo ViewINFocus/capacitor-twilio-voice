@@ -9,7 +9,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -60,7 +62,13 @@ public class VoiceCallService extends Service {
     private final List<AudioDevice> availableAudioDevicesSnapshot = new ArrayList<>();
     private AudioDevice selectedAudioDevice;
     private boolean isCallMuted = false;
+    private boolean isAudioSwitchActivated = false;
     private boolean isSpeakerEnabled = false;
+    private final Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+    @Nullable
+    private String preferredAudioOutput;
+    @Nullable
+    private String lastNotifiedAudioOutput;
     private String currentCallSid;
     private VoiceCallServiceListener serviceListener;
 
@@ -76,6 +84,7 @@ public class VoiceCallService extends Service {
             java.util.Set<Call.CallQualityWarning> previousWarnings
         );
         void onCallInviteAccepted(CallInvite callInvite);
+        void onAudioOutputChanged(String outputType);
     }
 
     public class VoiceCallBinder extends Binder {
@@ -180,24 +189,26 @@ public class VoiceCallService extends Service {
             selectedAudioDevice = selectedDevice;
             Log.d(TAG, "Available audio devices: " + audioDevices);
             Log.d(TAG, "Selected audio device: " + selectedDevice);
+            notifyAudioOutputChangedIfNeeded(getAudioOutputType(selectedDevice));
             return kotlin.Unit.INSTANCE;
         });
     }
 
     private void activateAudioSwitch() {
-        if (audioSwitch == null) {
+        if (audioSwitch == null || isAudioSwitchActivated) {
             return;
         }
 
         try {
             audioSwitch.activate();
+            isAudioSwitchActivated = true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to activate AudioSwitch", e);
         }
     }
 
     private void deactivateAudioSwitch() {
-        if (audioSwitch == null) {
+        if (audioSwitch == null || !isAudioSwitchActivated) {
             return;
         }
 
@@ -205,6 +216,8 @@ public class VoiceCallService extends Service {
             audioSwitch.deactivate();
         } catch (Exception e) {
             Log.e(TAG, "Failed to deactivate AudioSwitch", e);
+        } finally {
+            isAudioSwitchActivated = false;
         }
     }
 
@@ -241,7 +254,25 @@ public class VoiceCallService extends Service {
     }
 
     public boolean selectAudioOutput(String output) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (!isAudioOutputAvailable(output)) {
+                Log.w(TAG, "No suitable audio device found for output=" + output);
+                return false;
+            }
+
+            mainThreadHandler.post(() -> applyAudioOutput(output));
+            return true;
+        }
+
         return applyAudioOutput(output);
+    }
+
+    private boolean isAudioOutputAvailable(String output) {
+        if (audioSwitch == null) {
+            return false;
+        }
+
+        return findAudioDeviceByOutput(getAvailableAudioDevices(), output) != null;
     }
 
     private void handleStartCall(Intent intent) {
@@ -385,42 +416,111 @@ public class VoiceCallService extends Service {
         return null;
     }
 
-    @Nullable
-    static AudioDevice findPreferredAudioDevice(List<AudioDevice> audioDevices, boolean speakerEnabled) {
-        if (speakerEnabled) {
-            return findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_SPEAKER);
-        }
-
-        AudioDevice bluetoothDevice = findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_BLUETOOTH);
-        if (bluetoothDevice != null) {
-            return bluetoothDevice;
-        }
-
-        AudioDevice wiredDevice = findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_WIRED);
-        if (wiredDevice != null) {
-            return wiredDevice;
-        }
-
-        return findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_EARPIECE);
+    static List<String> getPreferredAudioOutputOrder(@Nullable String preferredOutput) {
+        List<String> orderedOutputs = new ArrayList<>();
+        addPreferredAudioOutput(orderedOutputs, preferredOutput);
+        addPreferredAudioOutput(orderedOutputs, AUDIO_OUTPUT_BLUETOOTH);
+        addPreferredAudioOutput(orderedOutputs, AUDIO_OUTPUT_WIRED);
+        addPreferredAudioOutput(orderedOutputs, AUDIO_OUTPUT_EARPIECE);
+        addPreferredAudioOutput(orderedOutputs, AUDIO_OUTPUT_SPEAKER);
+        return orderedOutputs;
     }
 
-    private void applyPreferredAudioDevice(boolean speakerEnabled) {
+    private static void addPreferredAudioOutput(List<String> orderedOutputs, @Nullable String output) {
+        if (output == null || orderedOutputs.contains(output)) {
+            return;
+        }
+
+        orderedOutputs.add(output);
+    }
+
+    @Nullable
+    static String findPreferredAvailableAudioOutput(List<String> availableOutputs, @Nullable String preferredOutput) {
+        for (String output : getPreferredAudioOutputOrder(preferredOutput)) {
+            if (availableOutputs.contains(output)) {
+                return output;
+            }
+        }
+
+        return null;
+    }
+
+    @Nullable
+    static AudioDevice findPreferredAudioDevice(List<AudioDevice> audioDevices, @Nullable String preferredOutput) {
+        List<String> availableOutputs = new ArrayList<>();
+        for (AudioDevice device : audioDevices) {
+            String outputType = getAudioOutputType(device);
+            if (outputType != null && !availableOutputs.contains(outputType)) {
+                availableOutputs.add(outputType);
+            }
+        }
+
+        String selectedOutput = findPreferredAvailableAudioOutput(availableOutputs, preferredOutput);
+        if (selectedOutput == null) {
+            return null;
+        }
+
+        return findAudioDeviceByOutput(audioDevices, selectedOutput);
+    }
+
+    private void applyPreferredAudioDeviceOnMainThread() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            applyPreferredAudioDevice();
+            return;
+        }
+
+        mainThreadHandler.post(this::applyPreferredAudioDevice);
+    }
+
+    private void applyPreferredAudioDevice() {
         if (audioSwitch == null) {
             return;
         }
 
         activateAudioSwitch();
 
-        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevices(), speakerEnabled);
+        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevices(), preferredAudioOutput);
         if (selectedDevice == null) {
-            Log.w(TAG, "No suitable audio device found for speakerEnabled=" + speakerEnabled);
+            Log.w(TAG, "No suitable audio device found for preferredOutput=" + preferredAudioOutput);
             return;
         }
 
-        audioSwitch.selectDevice(selectedDevice);
-        selectedAudioDevice = selectedDevice;
-        isSpeakerEnabled = speakerEnabled;
-        Log.d(TAG, "Audio device changed to: " + selectedDevice.getName());
+        selectAudioDevice(selectedDevice, preferredAudioOutput);
+    }
+
+    private void selectAudioDevice(AudioDevice device, @Nullable String requestedOutput) {
+        String selectedOutput = getAudioOutputType(device);
+        String currentOutput = getAudioOutputType(selectedAudioDevice);
+        if (selectedOutput != null && selectedOutput.equals(currentOutput)) {
+            preferredAudioOutput = selectedOutput;
+            isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(selectedOutput);
+            return;
+        }
+
+        audioSwitch.selectDevice(device);
+        selectedAudioDevice = device;
+        preferredAudioOutput = selectedOutput != null ? selectedOutput : requestedOutput;
+        isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(preferredAudioOutput);
+        Log.d(TAG, "Audio device changed to: " + device.getName());
+        notifyAudioOutputChangedIfNeeded(preferredAudioOutput);
+    }
+
+    private void notifyAudioOutputChangedIfNeeded(@Nullable String outputType) {
+        if (outputType == null || outputType.equals(lastNotifiedAudioOutput)) {
+            return;
+        }
+
+        lastNotifiedAudioOutput = outputType;
+        if (serviceListener != null) {
+            serviceListener.onAudioOutputChanged(outputType);
+        }
+    }
+
+    private void resetAudioOutputState() {
+        selectedAudioDevice = null;
+        preferredAudioOutput = null;
+        lastNotifiedAudioOutput = null;
+        isSpeakerEnabled = false;
     }
 
     private boolean applyAudioOutput(String output) {
@@ -436,16 +536,14 @@ public class VoiceCallService extends Service {
             return false;
         }
 
-        audioSwitch.selectDevice(selectedDevice);
-        selectedAudioDevice = selectedDevice;
-        isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(output);
-        Log.d(TAG, "Audio device changed to: " + selectedDevice.getName());
+        selectAudioDevice(selectedDevice, output);
         return true;
     }
 
     private void handleSpeakerToggle(Intent intent) {
         boolean speakerEnabled = intent.getBooleanExtra(EXTRA_SPEAKER_ENABLED, false);
-        applyPreferredAudioDevice(speakerEnabled);
+        preferredAudioOutput = speakerEnabled ? AUDIO_OUTPUT_SPEAKER : null;
+        applyPreferredAudioDeviceOnMainThread();
     }
 
     private void handleSetAudioOutput(Intent intent) {
@@ -455,7 +553,7 @@ public class VoiceCallService extends Service {
             return;
         }
 
-        applyAudioOutput(output);
+        selectAudioOutput(output);
     }
 
     private Notification createOngoingCallNotification(String contentText, boolean showActions) {
@@ -573,7 +671,7 @@ public class VoiceCallService extends Service {
             activeCall = call;
             currentCallSid = call.getSid();
 
-            applyPreferredAudioDevice(isSpeakerEnabled);
+            applyPreferredAudioDeviceOnMainThread();
 
             // Update notification to show connected state with actions
             updateOngoingCallNotification();
@@ -589,6 +687,8 @@ public class VoiceCallService extends Service {
 
             activeCall = null;
             currentCallSid = null;
+            resetAudioOutputState();
+            deactivateAudioSwitch();
 
             if (serviceListener != null) {
                 serviceListener.onCallDisconnected(call, error);
@@ -611,7 +711,7 @@ public class VoiceCallService extends Service {
         @Override
         public void onReconnected(Call call) {
             Log.d(TAG, "Call reconnected: " + call.getSid());
-            applyPreferredAudioDevice(isSpeakerEnabled);
+            applyPreferredAudioDeviceOnMainThread();
 
             if (serviceListener != null) {
                 serviceListener.onCallReconnected(call);
@@ -625,7 +725,7 @@ public class VoiceCallService extends Service {
             activeCall = null;
             currentCallSid = null;
             isCallMuted = false;
-            isSpeakerEnabled = false;
+            resetAudioOutputState();
 
             deactivateAudioSwitch();
 
@@ -654,7 +754,7 @@ public class VoiceCallService extends Service {
         @Override
         public void onRinging(Call call) {
             Log.d(TAG, "Call ringing: " + call.getSid());
-            applyPreferredAudioDevice(isSpeakerEnabled);
+            applyPreferredAudioDeviceOnMainThread();
 
             // Update notification to show ringing state
             Notification notification = createOngoingCallNotification("Ringing...", false);

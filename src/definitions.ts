@@ -703,6 +703,29 @@ export interface CapacitorTwilioVoicePlugin {
   ): Promise<PluginListenerHandle>;
 
   /**
+   * Listen for resolved audio output changes.
+   *
+   * This event is fired after the native layer finishes switching to a different
+   * audio route, such as earpiece, speaker, Bluetooth, or a wired headset.
+   *
+   * @param eventName - The event name ('audioOutputChanged')
+   * @param listenerFunc - Callback function to handle the event
+   * @param listenerFunc.data - Event data
+   * @param listenerFunc.data.audioOutput - The resolved audio route
+   * @param listenerFunc.data.outputType - Alias of the resolved audio route
+   * @param listenerFunc.data.availableAudioOutputs - The current list of available audio routes
+   * @returns Promise that resolves with a listener handle for removing the listener
+   */
+  addListener(
+    eventName: 'audioOutputChanged',
+    listenerFunc: (data: {
+      audioOutput: AudioOutputType;
+      outputType: AudioOutputType;
+      availableAudioOutputs: AudioOutputOption[];
+    }) => void,
+  ): Promise<PluginListenerHandle>;
+
+  /**
    * Listen for call quality warning events.
    *
    * This event is fired when the call quality changes, providing warnings about
