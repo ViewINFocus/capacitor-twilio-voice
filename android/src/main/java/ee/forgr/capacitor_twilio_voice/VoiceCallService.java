@@ -57,6 +57,7 @@ public class VoiceCallService extends Service {
     private Call activeCall;
     private CallInvite activeCallInvite;
     private AudioSwitch audioSwitch;
+    private final List<AudioDevice> availableAudioDevicesSnapshot = new ArrayList<>();
     private AudioDevice selectedAudioDevice;
     private boolean isCallMuted = false;
     private boolean isSpeakerEnabled = false;
@@ -174,6 +175,8 @@ public class VoiceCallService extends Service {
     private void initializeAudioSwitch() {
         audioSwitch = new AudioSwitch(getApplicationContext());
         audioSwitch.start((audioDevices, selectedDevice) -> {
+            availableAudioDevicesSnapshot.clear();
+            availableAudioDevicesSnapshot.addAll(audioDevices);
             selectedAudioDevice = selectedDevice;
             Log.d(TAG, "Available audio devices: " + audioDevices);
             Log.d(TAG, "Selected audio device: " + selectedDevice);
@@ -210,6 +213,21 @@ public class VoiceCallService extends Service {
     }
 
     public List<AudioDevice> getAvailableAudioDevicesSnapshot() {
+        if (!availableAudioDevicesSnapshot.isEmpty()) {
+            return new ArrayList<>(availableAudioDevicesSnapshot);
+        }
+
+        if (audioSwitch == null) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(audioSwitch.getAvailableAudioDevices());
+    }
+
+    private List<AudioDevice> getAvailableAudioDevices() {
+        if (!availableAudioDevicesSnapshot.isEmpty()) {
+            return new ArrayList<>(availableAudioDevicesSnapshot);
+        }
+
         if (audioSwitch == null) {
             return new ArrayList<>();
         }
@@ -393,7 +411,7 @@ public class VoiceCallService extends Service {
 
         activateAudioSwitch();
 
-        AudioDevice selectedDevice = findPreferredAudioDevice(audioSwitch.getAvailableAudioDevices(), speakerEnabled);
+        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevices(), speakerEnabled);
         if (selectedDevice == null) {
             Log.w(TAG, "No suitable audio device found for speakerEnabled=" + speakerEnabled);
             return;
@@ -412,7 +430,7 @@ public class VoiceCallService extends Service {
 
         activateAudioSwitch();
 
-        AudioDevice selectedDevice = findAudioDeviceByOutput(audioSwitch.getAvailableAudioDevices(), output);
+        AudioDevice selectedDevice = findAudioDeviceByOutput(getAvailableAudioDevices(), output);
         if (selectedDevice == null) {
             Log.w(TAG, "No suitable audio device found for output=" + output);
             return false;
