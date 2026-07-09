@@ -136,6 +136,8 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     // Voice Call Service
     private VoiceCallService voiceCallService;
     private boolean isServiceBound = false;
+    private final List<AudioDevice> availableAudioDevicesSnapshot = new ArrayList<>();
+    private AudioDevice selectedAudioDevice;
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -249,11 +251,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
     private JSArray buildAvailableAudioOutputs() {
         JSArray outputs = new JSArray();
-        if (voiceCallService == null) {
-            return outputs;
-        }
-
-        List<AudioDevice> devices = voiceCallService.getAvailableAudioDevicesSnapshot();
+        List<AudioDevice> devices = getAvailableAudioDevicesSnapshot();
         String[] orderedTypes = new String[] {
             VoiceCallService.AUDIO_OUTPUT_EARPIECE,
             VoiceCallService.AUDIO_OUTPUT_SPEAKER,
@@ -277,10 +275,26 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     }
 
     private void appendAudioOutputStatus(JSObject ret) {
-        String selectedOutput =
-            voiceCallService == null ? null : VoiceCallService.getAudioOutputType(voiceCallService.getSelectedAudioDevice());
+        String selectedOutput = VoiceCallService.getAudioOutputType(getSelectedAudioDeviceSnapshot());
         ret.put("audioOutput", selectedOutput);
         ret.put("availableAudioOutputs", buildAvailableAudioOutputs());
+    }
+
+    private List<AudioDevice> getAvailableAudioDevicesSnapshot() {
+        if (voiceCallService != null) {
+            return voiceCallService.getAvailableAudioDevicesSnapshot();
+        }
+
+        return new ArrayList<>(availableAudioDevicesSnapshot);
+    }
+
+    @Nullable
+    private AudioDevice getSelectedAudioDeviceSnapshot() {
+        if (voiceCallService != null) {
+            return voiceCallService.getSelectedAudioDevice();
+        }
+
+        return selectedAudioDevice;
     }
 
     @SuppressLint("WakelockTimeout")
@@ -761,6 +775,9 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private void initializeAudioSwitch() {
         audioSwitch = new AudioSwitch(getSafeContext().getApplicationContext(), null, true);
         audioSwitch.start((audioDevices, selectedDevice) -> {
+            availableAudioDevicesSnapshot.clear();
+            availableAudioDevicesSnapshot.addAll(audioDevices);
+            selectedAudioDevice = selectedDevice;
             Log.d(TAG, "Available audio devices: " + audioDevices.size());
             for (AudioDevice device : audioDevices) {
                 Log.d(TAG, "Available device: " + device.getName());

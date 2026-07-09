@@ -184,9 +184,12 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private func availableAudioOutputs() -> [[String: Any]] {
         let audioSession = AVAudioSession.sharedInstance()
         let availableInputs = audioSession.availableInputs ?? []
+        let currentRoute = audioSession.currentRoute
         var outputs: [[String: Any]] = []
 
-        if availableInputs.contains(where: { $0.portType == .builtInMic }) {
+        if availableInputs.contains(where: { $0.portType == .builtInMic }) ||
+            currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) ||
+            currentRoute.inputs.contains(where: { $0.portType == .builtInMic }) {
             outputs.append([
                 "type": audioOutputEarpiece,
                 "label": audioOutputLabel(for: nil, type: audioOutputEarpiece),
@@ -198,14 +201,20 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             "label": audioOutputLabel(for: nil, type: audioOutputSpeaker),
         ])
 
-        if let bluetoothInput = availableInputs.first(where: { isBluetoothPort($0.portType) }) {
+        if let bluetoothInput =
+            availableInputs.first(where: { isBluetoothPort($0.portType) }) ??
+            currentRoute.outputs.first(where: { isBluetoothPort($0.portType) }) ??
+            currentRoute.inputs.first(where: { isBluetoothPort($0.portType) }) {
             outputs.append([
                 "type": audioOutputBluetooth,
                 "label": audioOutputLabel(for: bluetoothInput, type: audioOutputBluetooth),
             ])
         }
 
-        if let wiredInput = availableInputs.first(where: { isWiredPort($0.portType) }) {
+        if let wiredInput =
+            availableInputs.first(where: { isWiredPort($0.portType) }) ??
+            currentRoute.outputs.first(where: { isWiredPort($0.portType) }) ??
+            currentRoute.inputs.first(where: { isWiredPort($0.portType) }) {
             outputs.append([
                 "type": audioOutputWired,
                 "label": audioOutputLabel(for: wiredInput, type: audioOutputWired),
@@ -939,7 +948,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     }
 
     private func toggleAudioRoute(toSpeaker: Bool) {
-        let output = toSpeaker ? audioOutputSpeaker : audioOutputEarpiece
+        let output = toSpeaker ? audioOutputSpeaker : preferredPrivateAudioOutput()
         audioDevice.block = {
             do {
                 try self.applyAudioOutputWithRecovery(output)
@@ -948,6 +957,25 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             }
         }
         audioDevice.block()
+    }
+
+    private func preferredPrivateAudioOutput() -> String {
+        let availableInputs = AVAudioSession.sharedInstance().availableInputs ?? []
+        let currentRoute = AVAudioSession.sharedInstance().currentRoute
+
+        if availableInputs.contains(where: { isBluetoothPort($0.portType) }) ||
+            currentRoute.outputs.contains(where: { isBluetoothPort($0.portType) }) ||
+            currentRoute.inputs.contains(where: { isBluetoothPort($0.portType) }) {
+            return audioOutputBluetooth
+        }
+
+        if availableInputs.contains(where: { isWiredPort($0.portType) }) ||
+            currentRoute.outputs.contains(where: { isWiredPort($0.portType) }) ||
+            currentRoute.inputs.contains(where: { isWiredPort($0.portType) }) {
+            return audioOutputWired
+        }
+
+        return audioOutputEarpiece
     }
 
     private func registrationRequired() -> Bool {
