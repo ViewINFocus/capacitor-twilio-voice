@@ -369,24 +369,21 @@ public class VoiceCallService extends Service {
 
     @Nullable
     static AudioDevice findPreferredAudioDevice(List<AudioDevice> audioDevices, boolean speakerEnabled) {
-        for (AudioDevice device : audioDevices) {
-            if (speakerEnabled && device instanceof AudioDevice.Speakerphone) {
-                return device;
-            }
-
-            if (
-                !speakerEnabled &&
-                (
-                    device instanceof AudioDevice.BluetoothHeadset ||
-                    device instanceof AudioDevice.WiredHeadset ||
-                    device instanceof AudioDevice.Earpiece
-                )
-            ) {
-                return device;
-            }
+        if (speakerEnabled) {
+            return findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_SPEAKER);
         }
 
-        return null;
+        AudioDevice bluetoothDevice = findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_BLUETOOTH);
+        if (bluetoothDevice != null) {
+            return bluetoothDevice;
+        }
+
+        AudioDevice wiredDevice = findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_WIRED);
+        if (wiredDevice != null) {
+            return wiredDevice;
+        }
+
+        return findAudioDeviceByOutput(audioDevices, AUDIO_OUTPUT_EARPIECE);
     }
 
     private void applyPreferredAudioDevice(boolean speakerEnabled) {
