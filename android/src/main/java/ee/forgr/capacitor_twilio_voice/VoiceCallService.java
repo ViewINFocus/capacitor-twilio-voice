@@ -26,8 +26,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.FutureTask;
 
 public class VoiceCallService extends Service {
 
@@ -57,22 +55,6 @@ public class VoiceCallService extends Service {
     public static final String EXTRA_MUTED = "MUTED";
     public static final String EXTRA_SPEAKER_ENABLED = "SPEAKER_ENABLED";
     public static final String EXTRA_AUDIO_OUTPUT = "AUDIO_OUTPUT";
-
-    static final class AudioOutputSnapshot {
-
-        final String type;
-        final String label;
-
-        AudioOutputSnapshot(String type, String label) {
-            this.type = type;
-            this.label = label;
-        }
-    }
-
-    private static final Object audioOutputStateLock = new Object();
-    private static final List<AudioOutputSnapshot> cachedAvailableAudioOutputs = new ArrayList<>();
-    @Nullable
-    private static String cachedSelectedAudioOutput;
 
     private Call activeCall;
     private CallInvite activeCallInvite;
@@ -182,8 +164,6 @@ public class VoiceCallService extends Service {
             audioSwitch = null;
         }
 
-        clearCachedAudioOutputState();
-
         super.onDestroy();
     }
 
@@ -207,7 +187,6 @@ public class VoiceCallService extends Service {
             availableAudioDevicesSnapshot.clear();
             availableAudioDevicesSnapshot.addAll(audioDevices);
             selectedAudioDevice = selectedDevice;
-            cacheAudioOutputState(audioDevices, selectedDevice);
             Log.d(TAG, "Available audio devices: " + audioDevices);
             Log.d(TAG, "Selected audio device: " + selectedDevice);
             notifyAudioOutputChangedIfNeeded(getAudioOutputType(selectedDevice));
@@ -244,15 +223,6 @@ public class VoiceCallService extends Service {
 
     public void setServiceListener(VoiceCallServiceListener listener) {
         this.serviceListener = listener;
-        if (listener == null) {
-            return;
-        }
-
-        String currentOutput = getAudioOutputType(selectedAudioDevice);
-        if (currentOutput != null) {
-            lastNotifiedAudioOutput = currentOutput;
-            listener.onAudioOutputChanged(currentOutput);
-        }
     }
 
     public List<AudioDevice> getAvailableAudioDevicesSnapshot() {
@@ -266,17 +236,16 @@ public class VoiceCallService extends Service {
         return new ArrayList<>(audioSwitch.getAvailableAudioDevices());
     }
 
-    static List<AudioOutputSnapshot> getCachedAvailableAudioOutputs() {
-        synchronized (audioOutputStateLock) {
-            return new ArrayList<>(cachedAvailableAudioOutputs);
+    private List<AudioDevice> getAvailableAudioDevices() {
+        if (!availableAudioDevicesSnapshot.isEmpty()) {
+            return new ArrayList<>(availableAudioDevicesSnapshot);
         }
-    }
 
-    @Nullable
-    static String getCachedSelectedAudioOutput() {
-        synchronized (audioOutputStateLock) {
-            return cachedSelectedAudioOutput;
+        if (audioSwitch == null) {
+            return new ArrayList<>();
         }
+
+        return new ArrayList<>(audioSwitch.getAvailableAudioDevices());
     }
 
     @Nullable
@@ -285,17 +254,25 @@ public class VoiceCallService extends Service {
     }
 
     public boolean selectAudioOutput(String output) {
-        return runAudioOutputTask(new FutureTask<>(() -> applyAudioOutput(output)), "selecting audio output");
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (!isAudioOutputAvailable(output)) {
+                Log.w(TAG, "No suitable audio device found for output=" + output);
+                return false;
+            }
+
+            mainThreadHandler.post(() -> applyAudioOutput(output));
+            return true;
+        }
+
+        return applyAudioOutput(output);
     }
 
-    public boolean setSpeakerEnabled(boolean speakerEnabled) {
-        return runAudioOutputTask(
-            new FutureTask<>(() -> {
-                preferredAudioOutput = speakerEnabled ? AUDIO_OUTPUT_SPEAKER : null;
-                return applyPreferredAudioDevice();
-            }),
-            "toggling speakerphone"
-        );
+    private boolean isAudioOutputAvailable(String output) {
+        if (audioSwitch == null) {
+            return false;
+        }
+
+        return findAudioDeviceByOutput(getAvailableAudioDevices(), output) != null;
     }
 
     private void handleStartCall(Intent intent) {
@@ -429,7 +406,7 @@ public class VoiceCallService extends Service {
     }
 
     @Nullable
-    static AudioDevice findAudioDeviceByOutput(List<? extends AudioDevice> audioDevices, String output) {
+    static AudioDevice findAudioDeviceByOutput(List<AudioDevice> audioDevices, String output) {
         for (AudioDevice device : audioDevices) {
             if (output.equals(getAudioOutputType(device))) {
                 return device;
@@ -469,7 +446,7 @@ public class VoiceCallService extends Service {
     }
 
     @Nullable
-    static AudioDevice findPreferredAudioDevice(List<? extends AudioDevice> audioDevices, @Nullable String preferredOutput) {
+    static AudioDevice findPreferredAudioDevice(List<AudioDevice> audioDevices, @Nullable String preferredOutput) {
         List<String> availableOutputs = new ArrayList<>();
         for (AudioDevice device : audioDevices) {
             String outputType = getAudioOutputType(device);
@@ -486,7 +463,7 @@ public class VoiceCallService extends Service {
         return findAudioDeviceByOutput(audioDevices, selectedOutput);
     }
 
-    private void applyPreferredAudioDeviceAsync() {
+    private void applyPreferredAudioDeviceOnMainThread() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             applyPreferredAudioDevice();
             return;
@@ -495,21 +472,20 @@ public class VoiceCallService extends Service {
         mainThreadHandler.post(this::applyPreferredAudioDevice);
     }
 
-    private boolean applyPreferredAudioDevice() {
+    private void applyPreferredAudioDevice() {
         if (audioSwitch == null) {
-            return false;
+            return;
         }
 
         activateAudioSwitch();
 
-        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevicesSnapshot(), preferredAudioOutput);
+        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevices(), preferredAudioOutput);
         if (selectedDevice == null) {
             Log.w(TAG, "No suitable audio device found for preferredOutput=" + preferredAudioOutput);
-            return false;
+            return;
         }
 
         selectAudioDevice(selectedDevice, preferredAudioOutput);
-        return true;
     }
 
     private void selectAudioDevice(AudioDevice device, @Nullable String requestedOutput) {
@@ -518,7 +494,6 @@ public class VoiceCallService extends Service {
         if (selectedOutput != null && selectedOutput.equals(currentOutput)) {
             preferredAudioOutput = selectedOutput;
             isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(selectedOutput);
-            cacheAudioOutputState(getAvailableAudioDevicesSnapshot(), selectedAudioDevice);
             return;
         }
 
@@ -526,7 +501,6 @@ public class VoiceCallService extends Service {
         selectedAudioDevice = device;
         preferredAudioOutput = selectedOutput != null ? selectedOutput : requestedOutput;
         isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(preferredAudioOutput);
-        cacheAudioOutputState(getAvailableAudioDevicesSnapshot(), selectedAudioDevice);
         Log.d(TAG, "Audio device changed to: " + device.getName());
         notifyAudioOutputChangedIfNeeded(preferredAudioOutput);
     }
@@ -547,9 +521,6 @@ public class VoiceCallService extends Service {
         preferredAudioOutput = null;
         lastNotifiedAudioOutput = null;
         isSpeakerEnabled = false;
-        synchronized (audioOutputStateLock) {
-            cachedSelectedAudioOutput = null;
-        }
     }
 
     private boolean applyAudioOutput(String output) {
@@ -559,7 +530,7 @@ public class VoiceCallService extends Service {
 
         activateAudioSwitch();
 
-        AudioDevice selectedDevice = findAudioDeviceByOutput(getAvailableAudioDevicesSnapshot(), output);
+        AudioDevice selectedDevice = findAudioDeviceByOutput(getAvailableAudioDevices(), output);
         if (selectedDevice == null) {
             Log.w(TAG, "No suitable audio device found for output=" + output);
             return false;
@@ -570,7 +541,9 @@ public class VoiceCallService extends Service {
     }
 
     private void handleSpeakerToggle(Intent intent) {
-        setSpeakerEnabled(intent.getBooleanExtra(EXTRA_SPEAKER_ENABLED, false));
+        boolean speakerEnabled = intent.getBooleanExtra(EXTRA_SPEAKER_ENABLED, false);
+        preferredAudioOutput = speakerEnabled ? AUDIO_OUTPUT_SPEAKER : null;
+        applyPreferredAudioDeviceOnMainThread();
     }
 
     private void handleSetAudioOutput(Intent intent) {
@@ -581,55 +554,6 @@ public class VoiceCallService extends Service {
         }
 
         selectAudioOutput(output);
-    }
-
-    private boolean runAudioOutputTask(FutureTask<Boolean> task, String actionDescription) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            task.run();
-        } else {
-            mainThreadHandler.post(task);
-        }
-
-        try {
-            return task.get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted while " + actionDescription, e);
-        } catch (ExecutionException e) {
-            Log.e(TAG, "Failed while " + actionDescription, e);
-        }
-
-        return false;
-    }
-
-    private static void cacheAudioOutputState(List<? extends AudioDevice> audioDevices, @Nullable AudioDevice selectedDevice) {
-        synchronized (audioOutputStateLock) {
-            cachedAvailableAudioOutputs.clear();
-            String[] orderedTypes = new String[] {
-                AUDIO_OUTPUT_EARPIECE,
-                AUDIO_OUTPUT_SPEAKER,
-                AUDIO_OUTPUT_BLUETOOTH,
-                AUDIO_OUTPUT_WIRED,
-            };
-
-            for (String type : orderedTypes) {
-                AudioDevice device = findAudioDeviceByOutput(audioDevices, type);
-                if (device == null) {
-                    continue;
-                }
-
-                cachedAvailableAudioOutputs.add(new AudioOutputSnapshot(type, getAudioOutputLabel(device)));
-            }
-
-            cachedSelectedAudioOutput = getAudioOutputType(selectedDevice);
-        }
-    }
-
-    private static void clearCachedAudioOutputState() {
-        synchronized (audioOutputStateLock) {
-            cachedAvailableAudioOutputs.clear();
-            cachedSelectedAudioOutput = null;
-        }
     }
 
     private Notification createOngoingCallNotification(String contentText, boolean showActions) {
@@ -747,7 +671,7 @@ public class VoiceCallService extends Service {
             activeCall = call;
             currentCallSid = call.getSid();
 
-            applyPreferredAudioDeviceAsync();
+            applyPreferredAudioDeviceOnMainThread();
 
             // Update notification to show connected state with actions
             updateOngoingCallNotification();
@@ -787,7 +711,7 @@ public class VoiceCallService extends Service {
         @Override
         public void onReconnected(Call call) {
             Log.d(TAG, "Call reconnected: " + call.getSid());
-            applyPreferredAudioDeviceAsync();
+            applyPreferredAudioDeviceOnMainThread();
 
             if (serviceListener != null) {
                 serviceListener.onCallReconnected(call);
@@ -830,7 +754,7 @@ public class VoiceCallService extends Service {
         @Override
         public void onRinging(Call call) {
             Log.d(TAG, "Call ringing: " + call.getSid());
-            applyPreferredAudioDeviceAsync();
+            applyPreferredAudioDeviceOnMainThread();
 
             // Update notification to show ringing state
             Notification notification = createOngoingCallNotification("Ringing...", false);

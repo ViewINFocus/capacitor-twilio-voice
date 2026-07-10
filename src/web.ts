@@ -1,6 +1,6 @@
 import { WebPlugin } from '@capacitor/core';
 
-import type { AudioOutputOption, AudioOutputStatus, AudioOutputType, CapacitorTwilioVoicePlugin, CallInvite } from './definitions';
+import type { AudioOutputOption, AudioOutputType, CapacitorTwilioVoicePlugin, CallInvite } from './definitions';
 
 export class CapacitorTwilioVoiceWeb extends WebPlugin implements CapacitorTwilioVoicePlugin {
   // Authentication
@@ -48,14 +48,14 @@ export class CapacitorTwilioVoiceWeb extends WebPlugin implements CapacitorTwili
     throw this.unimplemented('Not implemented on web.');
   }
 
-  async setSpeaker(_options: { enabled: boolean }): Promise<AudioOutputStatus> {
+  async setSpeaker(_options: { enabled: boolean }): Promise<{ success: boolean }> {
     void _options;
     throw this.unimplemented('Not implemented on web.');
   }
 
   async setAudioOutput(_options: {
     output: AudioOutputType;
-  }): Promise<AudioOutputStatus> {
+  }): Promise<{ success: boolean; audioOutput: AudioOutputType | null; availableAudioOutputs: AudioOutputOption[] }> {
     void _options;
     throw this.unimplemented('Not implemented on web.');
   }
