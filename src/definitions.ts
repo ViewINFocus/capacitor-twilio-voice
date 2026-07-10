@@ -69,6 +69,15 @@ export interface AudioOutputOption {
   label: string;
 }
 
+export interface AudioOutputStatus {
+  /** Whether the route change request succeeded. */
+  success: boolean;
+  /** The currently selected audio route after the native layer finishes applying the change. */
+  audioOutput: AudioOutputType | null;
+  /** The audio routes currently exposed by the native layer. */
+  availableAudioOutputs: AudioOutputOption[];
+}
+
 export interface CapacitorTwilioVoicePlugin {
   // Authentication
 
@@ -272,18 +281,20 @@ export interface CapacitorTwilioVoicePlugin {
   /**
    * Enable or disable speakerphone mode.
    *
-   * When enabled, audio will be routed through the device's speaker instead of the earpiece.
+   * When enabled, audio will be routed through the device's speaker instead of the private call route.
+   * When disabled, the native layer will fall back to Bluetooth, wired audio, or the earpiece.
    *
    * @param options - Configuration object
    * @param options.enabled - Whether to enable (true) or disable (false) speakerphone mode
-   * @returns Promise that resolves with success status
+   * @returns Promise that resolves with the selected output and the currently available outputs
    *
    * @example
    * ```typescript
    * // Enable speakerphone
-   * await CapacitorTwilioVoice.setSpeaker({
+   * const status = await CapacitorTwilioVoice.setSpeaker({
    *   enabled: true
    * });
+   * console.log(status.audioOutput);
    *
    * // Disable speakerphone
    * await CapacitorTwilioVoice.setSpeaker({
@@ -291,7 +302,7 @@ export interface CapacitorTwilioVoicePlugin {
    * });
    * ```
   */
-  setSpeaker(options: { enabled: boolean }): Promise<{ success: boolean }>;
+  setSpeaker(options: { enabled: boolean }): Promise<AudioOutputStatus>;
 
   /**
    * Explicitly select the active audio output for the current call.
@@ -302,11 +313,7 @@ export interface CapacitorTwilioVoicePlugin {
    */
   setAudioOutput(options: {
     output: AudioOutputType;
-  }): Promise<{
-    success: boolean;
-    audioOutput: AudioOutputType | null;
-    availableAudioOutputs: AudioOutputOption[];
-  }>;
+  }): Promise<AudioOutputStatus>;
 
   /**
    * Enable or disable proximity monitoring during a call.
