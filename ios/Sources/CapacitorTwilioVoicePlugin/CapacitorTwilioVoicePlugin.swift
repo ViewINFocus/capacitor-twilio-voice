@@ -72,6 +72,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private var playCustomRingback = false
     private var ringtonePlayer: AVAudioPlayer?
     private var proximityMonitoringEnabled = false
+    private var lastAudioOutputChangeSignature: String?
     private struct PendingOutgoingCall {
         let to: String
         let completion: (Bool) -> Void
@@ -244,6 +245,47 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         return audioOutputEarpiece
     }
 
+    private func currentAudioOutputPayload() -> [String: Any]? {
+        guard let audioOutput = currentAudioOutput() else {
+            return nil
+        }
+
+        return [
+            "audioOutput": audioOutput,
+            "outputType": audioOutput,
+            "availableAudioOutputs": availableAudioOutputs(),
+        ]
+    }
+
+    private func currentAudioOutputChangeSignature(audioOutput: String, availableOutputs: [[String: Any]]) -> String {
+        let outputSignature = availableOutputs.compactMap { output -> String? in
+            guard let type = output["type"] as? String else {
+                return nil
+            }
+
+            let label = output["label"] as? String ?? ""
+            return "\(type):\(label)"
+        }.joined(separator: "|")
+
+        return "\(audioOutput)#\(outputSignature)"
+    }
+
+    private func emitAudioOutputChanged(force: Bool = false) {
+        guard let payload = currentAudioOutputPayload(),
+              let audioOutput = payload["audioOutput"] as? String,
+              let availableOutputs = payload["availableAudioOutputs"] as? [[String: Any]] else {
+            return
+        }
+
+        let signature = currentAudioOutputChangeSignature(audioOutput: audioOutput, availableOutputs: availableOutputs)
+        if !force, lastAudioOutputChangeSignature == signature {
+            return
+        }
+
+        lastAudioOutputChangeSignature = signature
+        notifyListeners("audioOutputChanged", data: payload)
+    }
+
     private func preferredInput(for output: String, availableInputs: [AVAudioSessionPortDescription]) -> AVAudioSessionPortDescription? {
         switch output {
         case audioOutputBluetooth:
@@ -300,6 +342,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             NSLog("Failed to change audio route: \(error.localizedDescription)")
 
             do {
+                try resetAudioOutputRoute()
                 try applyAudioOutput(output)
                 NSLog("Audio route recovered and changed to: \(output)")
             } catch {
@@ -307,6 +350,16 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
                 throw error
             }
         }
+    }
+
+    private func resetAudioOutputRoute() throws {
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.overrideOutputAudioPort(.none)
+        try audioSession.setPreferredInput(nil)
+        try audioSession.setCategory(.playAndRecord,
+                                     mode: .voiceChat,
+                                     options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
+        try audioSession.setActive(true)
     }
 
     private func setupNotifications() {
@@ -321,6 +374,13 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             self,
             selector: #selector(handleAudioSessionInterruption),
             name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange(notification:)),
+            name: AVAudioSession.routeChangeNotification,
             object: nil
         )
     }
@@ -371,6 +431,17 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
 
         @unknown default:
             break
+        }
+    }
+
+    @objc private func handleAudioRouteChange(notification: Notification) {
+        if let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+           let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) {
+            NSLog("Audio route changed with reason: \(reason.rawValue)")
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.emitAudioOutputChanged()
         }
     }
 
@@ -773,12 +844,14 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         }
 
         do {
-            try applyAudioOutputWithRecovery(enabled ? audioOutputSpeaker : audioOutputEarpiece)
-            call.resolve([
-                "success": true,
+            try applyAudioOutputInAudioDeviceBlock(enabled ? audioOutputSpeaker : preferredPrivateAudioOutput())
+            var payload = currentAudioOutputPayload() ?? [
                 "audioOutput": currentAudioOutput() as Any,
+                "outputType": currentAudioOutput() as Any,
                 "availableAudioOutputs": availableAudioOutputs(),
-            ])
+            ]
+            payload["success"] = true
+            call.resolve(payload)
         } catch {
             call.reject("Failed to set speaker: \(error.localizedDescription)")
         }
@@ -791,12 +864,14 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         }
 
         do {
-            try applyAudioOutputWithRecovery(output)
-            call.resolve([
-                "success": true,
+            try applyAudioOutputInAudioDeviceBlock(output)
+            var payload = currentAudioOutputPayload() ?? [
                 "audioOutput": currentAudioOutput() as Any,
+                "outputType": currentAudioOutput() as Any,
                 "availableAudioOutputs": availableAudioOutputs(),
-            ])
+            ]
+            payload["success"] = true
+            call.resolve(payload)
         } catch {
             call.reject("Failed to set audio output: \(error.localizedDescription)")
         }
@@ -947,16 +1022,34 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         return contact.personHandle?.value
     }
 
-    private func toggleAudioRoute(toSpeaker: Bool) {
-        let output = toSpeaker ? audioOutputSpeaker : preferredPrivateAudioOutput()
-        audioDevice.block = {
+    private func applyAudioOutputInAudioDeviceBlock(_ output: String) throws {
+        var applyError: Error?
+
+        audioDevice.block = { [weak self] in
+            guard let self = self else { return }
+
             do {
                 try self.applyAudioOutputWithRecovery(output)
             } catch {
-                NSLog("Failed to apply audio route in audio device block: \(error.localizedDescription)")
+                applyError = error
             }
         }
+
         audioDevice.block()
+
+        if let applyError = applyError {
+            throw applyError
+        }
+
+        emitAudioOutputChanged(force: true)
+    }
+
+    private func toggleAudioRoute(toSpeaker: Bool) {
+        do {
+            try applyAudioOutputInAudioDeviceBlock(toSpeaker ? audioOutputSpeaker : preferredPrivateAudioOutput())
+        } catch {
+            NSLog("Failed to apply audio route in audio device block: \(error.localizedDescription)")
+        }
     }
 
     private func preferredPrivateAudioOutput() -> String {
@@ -1280,6 +1373,7 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
         // Don't force speaker on - maintain current audio routing preference
         // toggleAudioRoute(toSpeaker: true) // Removed - this was forcing speaker on
         notifyListeners("callConnected", data: ["callSid": call.uuid!.uuidString])
+        emitAudioOutputChanged(force: true)
     }
 
     public func callIsReconnecting(call: Call, error: Error) {
@@ -1291,6 +1385,7 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
 
     public func callDidReconnect(call: Call) {
         notifyListeners("callReconnected", data: ["callSid": call.uuid!.uuidString])
+        emitAudioOutputChanged(force: true)
     }
 
     public func callDidFailToConnect(call: Call, error: Error) {
@@ -1328,6 +1423,7 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
         activeCalls.removeValue(forKey: call.uuid!.uuidString)
         userInitiatedDisconnect = false
         setProximityMonitoringEnabled(false)
+        lastAudioOutputChangeSignature = nil
 
         if playCustomRingback {
             stopRingback()
