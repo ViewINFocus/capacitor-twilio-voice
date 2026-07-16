@@ -22,4 +22,20 @@ class CapacitorTwilioVoiceTests: XCTestCase {
 
         XCTAssertEqual(audioOutputEarpiece, output)
     }
+
+    func testRingingAppliesDefaultRouteWithoutExplicitPreference() {
+        XCTAssertTrue(AudioOutputRouteSupport.shouldApplyDefaultRoute(preferredOutput: nil))
+    }
+
+    func testRingingPreservesExplicitRoutePreference() {
+        XCTAssertFalse(
+            AudioOutputRouteSupport.shouldApplyDefaultRoute(preferredOutput: audioOutputSpeaker)
+        )
+        XCTAssertFalse(
+            AudioOutputRouteSupport.shouldApplyDefaultRoute(preferredOutput: audioOutputEarpiece)
+        )
+        XCTAssertFalse(
+            AudioOutputRouteSupport.shouldApplyDefaultRoute(preferredOutput: audioOutputBluetooth)
+        )
+    }
 }
