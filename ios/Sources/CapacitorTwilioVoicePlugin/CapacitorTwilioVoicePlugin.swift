@@ -99,7 +99,7 @@ public protocol PushKitEventDelegate: AnyObject {
 @objc(CapacitorTwilioVoicePlugin)
 public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEventDelegate {
       // @release
-    private let pluginVersion: String = "7.7.20"
+    private let pluginVersion: String = "7.7.21"
 
     public let identifier = "CapacitorTwilioVoicePlugin"
     public let jsName = "CapacitorTwilioVoice"
@@ -141,7 +141,11 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private var proximityMonitoringEnabled = false
     private var lastAudioOutputNotificationSignature: String?
     private var preferredAudioOutput: String?
+    private var pendingAudioOutputSelection: String?
+    private var audioOutputSelectionGeneration = 0
     private var audioRouteRefreshWorkItem: DispatchWorkItem?
+    private let audioOutputConfirmationAttempts = 20
+    private let audioOutputConfirmationDelay = 0.1
     private struct PendingOutgoingCall {
         let to: String
         let completion: (Bool) -> Void
@@ -336,23 +340,27 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
 
     private func applyAudioOutput(_ output: String) throws {
         let audioSession = AVAudioSession.sharedInstance()
-        let availableInputs = audioSession.availableInputs ?? []
 
         try audioSession.setCategory(.playAndRecord,
                                      mode: .voiceChat,
                                      options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
         try audioSession.setActive(true)
+        let availableInputs = audioSession.availableInputs ?? []
 
         switch output {
         case audioOutputSpeaker:
             try audioSession.setPreferredInput(nil)
             try audioSession.overrideOutputAudioPort(.speaker)
         case audioOutputEarpiece:
-            try audioSession.overrideOutputAudioPort(.none)
-            try audioSession.setPreferredInput(nil)
-            if let builtInMic = preferredInput(for: output, availableInputs: availableInputs) {
-                try audioSession.setPreferredInput(builtInMic)
+            guard let builtInMic = preferredInput(for: output, availableInputs: availableInputs) else {
+                throw NSError(
+                    domain: "CapacitorTwilioVoicePlugin",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "The built-in earpiece route is not available."]
+                )
             }
+            try audioSession.setPreferredInput(builtInMic)
+            try audioSession.overrideOutputAudioPort(.none)
         case audioOutputBluetooth, audioOutputWired:
             guard let selectedInput = preferredInput(for: output, availableInputs: availableInputs) else {
                 throw NSError(
@@ -411,12 +419,6 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             object: nil
         )
 
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAvailableAudioInputsChange),
-            name: AVAudioSession.availableInputsChangeNotification,
-            object: nil
-        )
     }
 
     @objc private func handleMediaServicesReset() {
@@ -481,12 +483,6 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         scheduleAudioRouteRefresh()
     }
 
-    @objc private func handleAvailableAudioInputsChange(notification: Notification) {
-        _ = notification
-        NSLog("Available audio inputs changed")
-        scheduleAudioRouteRefresh()
-    }
-
     private func scheduleAudioRouteRefresh() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -501,6 +497,10 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     }
 
     private func refreshAudioRouteAfterHardwareChange() {
+        guard pendingAudioOutputSelection == nil else {
+            return
+        }
+
         let availableOutputs = availableAudioOutputs()
         let availableOutputTypes = availableOutputs.compactMap { $0["type"] as? String }
         let resolvedOutput = AudioOutputRouteSupport.resolvedOutput(
@@ -514,14 +514,49 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         }
 
         if getActiveCall() != nil && currentAudioOutput() != resolvedOutput {
+            pendingAudioOutputSelection = resolvedOutput
+            audioOutputSelectionGeneration += 1
+            let generation = audioOutputSelectionGeneration
             do {
                 try applyAudioOutputWithRecovery(resolvedOutput)
+                confirmRefreshedAudioOutput(
+                    resolvedOutput,
+                    generation: generation,
+                    attemptsRemaining: audioOutputConfirmationAttempts
+                )
             } catch {
+                pendingAudioOutputSelection = nil
                 NSLog("Failed to refresh audio route after hardware change: \(error.localizedDescription)")
+                notifyAudioOutputChangedIfNeeded(force: true)
             }
+            return
         }
 
         notifyAudioOutputChangedIfNeeded(force: true)
+    }
+
+    private func confirmRefreshedAudioOutput(
+        _ output: String,
+        generation: Int,
+        attemptsRemaining: Int
+    ) {
+        guard generation == audioOutputSelectionGeneration else {
+            return
+        }
+
+        if currentAudioOutput() == output || attemptsRemaining == 0 {
+            pendingAudioOutputSelection = nil
+            notifyAudioOutputChangedIfNeeded(force: true)
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + audioOutputConfirmationDelay) { [weak self] in
+            self?.confirmRefreshedAudioOutput(
+                output,
+                generation: generation,
+                attemptsRemaining: attemptsRemaining - 1
+            )
+        }
     }
 
     private func isTokenValid(_ token: String) -> Bool {
@@ -947,11 +982,49 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             return
         }
 
-        let previousPreferredOutput = preferredAudioOutput
-        preferredAudioOutput = output
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                call.reject("Audio output selection is unavailable")
+                return
+            }
 
-        do {
-            try applyAudioOutputWithRecovery(output)
+            let previousPreferredOutput = self.preferredAudioOutput
+            self.preferredAudioOutput = output
+            self.pendingAudioOutputSelection = output
+            self.audioOutputSelectionGeneration += 1
+            let generation = self.audioOutputSelectionGeneration
+
+            do {
+                try self.applyAudioOutputWithRecovery(output)
+                self.confirmAudioOutputSelection(
+                    output,
+                    previousPreferredOutput: previousPreferredOutput,
+                    generation: generation,
+                    attemptsRemaining: self.audioOutputConfirmationAttempts,
+                    call: call
+                )
+            } catch {
+                self.pendingAudioOutputSelection = nil
+                self.preferredAudioOutput = previousPreferredOutput
+                call.reject("Failed to set audio output: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func confirmAudioOutputSelection(
+        _ output: String,
+        previousPreferredOutput: String?,
+        generation: Int,
+        attemptsRemaining: Int,
+        call: CAPPluginCall
+    ) {
+        guard generation == audioOutputSelectionGeneration else {
+            call.reject("Audio output selection was superseded")
+            return
+        }
+
+        if currentAudioOutput() == output {
+            pendingAudioOutputSelection = nil
             let status = currentAudioOutputStatus()
             notifyAudioOutputChangedIfNeeded(status: status)
             call.resolve([
@@ -959,9 +1032,32 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
                 "audioOutput": status["audioOutput"] as Any,
                 "availableAudioOutputs": status["availableAudioOutputs"] as Any,
             ])
-        } catch {
+            return
+        }
+
+        guard attemptsRemaining > 0 else {
+            pendingAudioOutputSelection = nil
             preferredAudioOutput = previousPreferredOutput
-            call.reject("Failed to set audio output: \(error.localizedDescription)")
+            if let previousPreferredOutput {
+                try? applyAudioOutputWithRecovery(previousPreferredOutput)
+            }
+            notifyAudioOutputChangedIfNeeded(force: true)
+            call.reject("Failed to set audio output: requested route did not become active")
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + audioOutputConfirmationDelay) { [weak self] in
+            guard let self else {
+                call.reject("Audio output selection is unavailable")
+                return
+            }
+            self.confirmAudioOutputSelection(
+                output,
+                previousPreferredOutput: previousPreferredOutput,
+                generation: generation,
+                attemptsRemaining: attemptsRemaining - 1,
+                call: call
+            )
         }
     }
 
@@ -1538,6 +1634,8 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
         activeCalls.removeValue(forKey: call.uuid!.uuidString)
         userInitiatedDisconnect = false
         preferredAudioOutput = nil
+        pendingAudioOutputSelection = nil
+        audioOutputSelectionGeneration += 1
         setProximityMonitoringEnabled(false)
 
         if playCustomRingback {
