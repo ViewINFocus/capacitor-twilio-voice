@@ -69,6 +69,18 @@ enum AudioOutputRouteSupport {
             "availableAudioOutputs": availableOutputs,
         ]
     }
+
+    static func resolvedOutput(
+        preferredOutput: String?,
+        availableOutputTypes: [String],
+        fallbackOutput: String
+    ) -> String {
+        if let preferredOutput, availableOutputTypes.contains(preferredOutput) {
+            return preferredOutput
+        }
+
+        return fallbackOutput
+    }
 }
 
 public protocol PushKitEventDelegate: AnyObject {
@@ -87,7 +99,7 @@ public protocol PushKitEventDelegate: AnyObject {
 @objc(CapacitorTwilioVoicePlugin)
 public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEventDelegate {
       // @release
-    private let pluginVersion: String = "7.7.18"
+    private let pluginVersion: String = "7.7.19"
 
     public let identifier = "CapacitorTwilioVoicePlugin"
     public let jsName = "CapacitorTwilioVoice"
@@ -128,6 +140,8 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private var ringtonePlayer: AVAudioPlayer?
     private var proximityMonitoringEnabled = false
     private var lastAudioOutputNotificationSignature: String?
+    private var preferredAudioOutput: String?
+    private var audioRouteRefreshWorkItem: DispatchWorkItem?
     private struct PendingOutgoingCall {
         let to: String
         let completion: (Bool) -> Void
@@ -138,6 +152,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private var pendingOutgoingCalls: [UUID: PendingOutgoingCall] = [:]
 
     deinit {
+        audioRouteRefreshWorkItem?.cancel()
         setProximityMonitoringEnabled(false)
 
         // Remove observers
@@ -395,6 +410,13 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAvailableAudioInputsChange),
+            name: AVAudioSession.availableInputsChangeNotification,
+            object: nil
+        )
     }
 
     @objc private func handleMediaServicesReset() {
@@ -456,7 +478,50 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             NSLog("Audio route changed")
         }
 
-        notifyAudioOutputChangedIfNeeded()
+        scheduleAudioRouteRefresh()
+    }
+
+    @objc private func handleAvailableAudioInputsChange(notification: Notification) {
+        _ = notification
+        NSLog("Available audio inputs changed")
+        scheduleAudioRouteRefresh()
+    }
+
+    private func scheduleAudioRouteRefresh() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            self.audioRouteRefreshWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.refreshAudioRouteAfterHardwareChange()
+            }
+            self.audioRouteRefreshWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+        }
+    }
+
+    private func refreshAudioRouteAfterHardwareChange() {
+        let availableOutputs = availableAudioOutputs()
+        let availableOutputTypes = availableOutputs.compactMap { $0["type"] as? String }
+        let resolvedOutput = AudioOutputRouteSupport.resolvedOutput(
+            preferredOutput: preferredAudioOutput,
+            availableOutputTypes: availableOutputTypes,
+            fallbackOutput: preferredPrivateAudioOutput()
+        )
+
+        if preferredAudioOutput != nil && preferredAudioOutput != resolvedOutput {
+            preferredAudioOutput = nil
+        }
+
+        if getActiveCall() != nil && currentAudioOutput() != resolvedOutput {
+            do {
+                try applyAudioOutputWithRecovery(resolvedOutput)
+            } catch {
+                NSLog("Failed to refresh audio route after hardware change: \(error.localizedDescription)")
+            }
+        }
+
+        notifyAudioOutputChangedIfNeeded(force: true)
     }
 
     private func isTokenValid(_ token: String) -> Bool {
@@ -857,25 +922,9 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             return
         }
 
-        do {
-            try applyAudioOutputWithRecovery(enabled ? audioOutputSpeaker : audioOutputEarpiece)
-            let status = currentAudioOutputStatus()
-            notifyAudioOutputChangedIfNeeded(status: status)
-            call.resolve([
-                "success": true,
-                "audioOutput": status["audioOutput"] as Any,
-                "availableAudioOutputs": status["availableAudioOutputs"] as Any,
-            ])
-        } catch {
-            call.reject("Failed to set speaker: \(error.localizedDescription)")
-        }
-    }
-
-    @objc func setAudioOutput(_ call: CAPPluginCall) {
-        guard let output = call.getString("output"), !output.isEmpty else {
-            call.reject("output parameter is required")
-            return
-        }
+        let previousPreferredOutput = preferredAudioOutput
+        preferredAudioOutput = enabled ? audioOutputSpeaker : nil
+        let output = resolvedAudioOutput()
 
         do {
             try applyAudioOutputWithRecovery(output)
@@ -887,6 +936,31 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
                 "availableAudioOutputs": status["availableAudioOutputs"] as Any,
             ])
         } catch {
+            preferredAudioOutput = previousPreferredOutput
+            call.reject("Failed to set speaker: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func setAudioOutput(_ call: CAPPluginCall) {
+        guard let output = call.getString("output"), !output.isEmpty else {
+            call.reject("output parameter is required")
+            return
+        }
+
+        let previousPreferredOutput = preferredAudioOutput
+        preferredAudioOutput = output
+
+        do {
+            try applyAudioOutputWithRecovery(output)
+            let status = currentAudioOutputStatus()
+            notifyAudioOutputChangedIfNeeded(status: status)
+            call.resolve([
+                "success": true,
+                "audioOutput": status["audioOutput"] as Any,
+                "availableAudioOutputs": status["availableAudioOutputs"] as Any,
+            ])
+        } catch {
+            preferredAudioOutput = previousPreferredOutput
             call.reject("Failed to set audio output: \(error.localizedDescription)")
         }
     }
@@ -1072,8 +1146,11 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     }
 
     private func toggleAudioRoute(toSpeaker: Bool) {
-        let output = toSpeaker ? audioOutputSpeaker : preferredPrivateAudioOutput()
-        audioDevice.block = {
+        preferredAudioOutput = toSpeaker ? audioOutputSpeaker : nil
+        audioDevice.block = { [weak self] in
+            guard let self else { return }
+
+            let output = self.resolvedAudioOutput()
             do {
                 try self.applyAudioOutputWithRecovery(output)
             } catch {
@@ -1081,6 +1158,15 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             }
         }
         audioDevice.block()
+    }
+
+    private func resolvedAudioOutput() -> String {
+        let availableOutputTypes = availableAudioOutputs().compactMap { $0["type"] as? String }
+        return AudioOutputRouteSupport.resolvedOutput(
+            preferredOutput: preferredAudioOutput,
+            availableOutputTypes: availableOutputTypes,
+            fallbackOutput: preferredPrivateAudioOutput()
+        )
     }
 
     private func preferredPrivateAudioOutput() -> String {
@@ -1451,6 +1537,7 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
 
         activeCalls.removeValue(forKey: call.uuid!.uuidString)
         userInitiatedDisconnect = false
+        preferredAudioOutput = nil
         setProximityMonitoringEnabled(false)
 
         if playCustomRingback {

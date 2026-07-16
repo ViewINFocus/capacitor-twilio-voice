@@ -189,7 +189,16 @@ public class VoiceCallService extends Service {
             selectedAudioDevice = selectedDevice;
             Log.d(TAG, "Available audio devices: " + audioDevices);
             Log.d(TAG, "Selected audio device: " + selectedDevice);
-            notifyAudioOutputChangedIfNeeded(getAudioOutputType(selectedDevice));
+            String selectedOutput = getAudioOutputType(selectedDevice);
+            preferredAudioOutput = rememberedExternalAudioOutput(preferredAudioOutput, selectedOutput);
+            List<String> availableOutputs = new ArrayList<>();
+            for (AudioDevice device : audioDevices) {
+                addPreferredAudioOutput(availableOutputs, getAudioOutputType(device));
+            }
+            if (shouldReapplyPreferredAudioOutput(availableOutputs, selectedOutput, preferredAudioOutput)) {
+                applyPreferredAudioDeviceOnMainThread();
+            }
+            notifyAudioOutputChangedIfNeeded(selectedOutput);
             return kotlin.Unit.INSTANCE;
         });
     }
@@ -457,6 +466,29 @@ public class VoiceCallService extends Service {
         return null;
     }
 
+    static boolean shouldReapplyPreferredAudioOutput(
+        List<String> availableOutputs,
+        @Nullable String selectedOutput,
+        @Nullable String preferredOutput
+    ) {
+        return preferredOutput != null &&
+            availableOutputs.contains(preferredOutput) &&
+            !preferredOutput.equals(selectedOutput);
+    }
+
+    @Nullable
+    static String rememberedExternalAudioOutput(@Nullable String preferredOutput, @Nullable String selectedOutput) {
+        if (preferredOutput != null) {
+            return preferredOutput;
+        }
+
+        if (AUDIO_OUTPUT_BLUETOOTH.equals(selectedOutput) || AUDIO_OUTPUT_WIRED.equals(selectedOutput)) {
+            return selectedOutput;
+        }
+
+        return null;
+    }
+
     @Nullable
     static AudioDevice findPreferredAudioDevice(List<AudioDevice> audioDevices, @Nullable String preferredOutput) {
         List<String> availableOutputs = new ArrayList<>();
@@ -504,17 +536,17 @@ public class VoiceCallService extends Service {
         String selectedOutput = getAudioOutputType(device);
         String currentOutput = getAudioOutputType(selectedAudioDevice);
         if (selectedOutput != null && selectedOutput.equals(currentOutput)) {
-            preferredAudioOutput = selectedOutput;
+            preferredAudioOutput = requestedOutput;
             isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(selectedOutput);
             return;
         }
 
         audioSwitch.selectDevice(device);
         selectedAudioDevice = device;
-        preferredAudioOutput = selectedOutput != null ? selectedOutput : requestedOutput;
-        isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(preferredAudioOutput);
+        preferredAudioOutput = requestedOutput;
+        isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(selectedOutput);
         Log.d(TAG, "Audio device changed to: " + device.getName());
-        notifyAudioOutputChangedIfNeeded(preferredAudioOutput);
+        notifyAudioOutputChangedIfNeeded(selectedOutput);
     }
 
     private void notifyAudioOutputChangedIfNeeded(@Nullable String outputType) {
