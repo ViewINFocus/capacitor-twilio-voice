@@ -223,6 +223,12 @@ public class VoiceCallService extends Service {
 
     public void setServiceListener(VoiceCallServiceListener listener) {
         this.serviceListener = listener;
+        mainThreadHandler.post(() -> {
+            String selectedOutput = getAudioOutputType(selectedAudioDevice);
+            if (selectedOutput != null && serviceListener == listener) {
+                listener.onAudioOutputChanged(selectedOutput);
+            }
+        });
     }
 
     public List<AudioDevice> getAvailableAudioDevicesSnapshot() {
@@ -255,24 +261,30 @@ public class VoiceCallService extends Service {
 
     public boolean selectAudioOutput(String output) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            if (!isAudioOutputAvailable(output)) {
-                Log.w(TAG, "No suitable audio device found for output=" + output);
-                return false;
-            }
-
-            mainThreadHandler.post(() -> applyAudioOutput(output));
-            return true;
+            Log.w(TAG, "Audio output selection must run on the main thread");
+            return false;
         }
 
         return applyAudioOutput(output);
     }
 
-    private boolean isAudioOutputAvailable(String output) {
-        if (audioSwitch == null) {
+    public boolean setSpeakerEnabled(boolean enabled) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Log.w(TAG, "Speaker selection must run on the main thread");
             return false;
         }
 
-        return findAudioDeviceByOutput(getAvailableAudioDevices(), output) != null;
+        if (enabled) {
+            return applyAudioOutput(AUDIO_OUTPUT_SPEAKER);
+        }
+
+        AudioDevice selectedDevice = findPreferredAudioDevice(getAvailableAudioDevices(), null);
+        if (selectedDevice == null) {
+            return false;
+        }
+
+        selectAudioDevice(selectedDevice, null);
+        return true;
     }
 
     private void handleStartCall(Intent intent) {

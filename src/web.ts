@@ -1,6 +1,12 @@
 import { WebPlugin } from '@capacitor/core';
 
-import type { AudioOutputOption, AudioOutputType, CapacitorTwilioVoicePlugin, CallInvite } from './definitions';
+import type {
+  AudioOutputOption,
+  AudioOutputStatus,
+  AudioOutputType,
+  CapacitorTwilioVoicePlugin,
+  CallInvite,
+} from './definitions';
 
 export class CapacitorTwilioVoiceWeb extends WebPlugin implements CapacitorTwilioVoicePlugin {
   // Authentication
@@ -48,14 +54,12 @@ export class CapacitorTwilioVoiceWeb extends WebPlugin implements CapacitorTwili
     throw this.unimplemented('Not implemented on web.');
   }
 
-  async setSpeaker(_options: { enabled: boolean }): Promise<{ success: boolean }> {
+  async setSpeaker(_options: { enabled: boolean }): Promise<AudioOutputStatus> {
     void _options;
     throw this.unimplemented('Not implemented on web.');
   }
 
-  async setAudioOutput(_options: {
-    output: AudioOutputType;
-  }): Promise<{ success: boolean; audioOutput: AudioOutputType | null; availableAudioOutputs: AudioOutputOption[] }> {
+  async setAudioOutput(_options: { output: AudioOutputType }): Promise<AudioOutputStatus> {
     void _options;
     throw this.unimplemented('Not implemented on web.');
   }
@@ -92,6 +96,14 @@ export class CapacitorTwilioVoiceWeb extends WebPlugin implements CapacitorTwili
 
   async requestMicrophonePermission(): Promise<{ granted: boolean }> {
     throw this.unimplemented('Not implemented on web.');
+  }
+
+  async checkBluetoothPermission(): Promise<{ granted: boolean }> {
+    return { granted: false };
+  }
+
+  async requestBluetoothPermission(): Promise<{ granted: boolean }> {
+    return { granted: false };
   }
 
   async getPluginVersion(): Promise<{ version: string }> {
