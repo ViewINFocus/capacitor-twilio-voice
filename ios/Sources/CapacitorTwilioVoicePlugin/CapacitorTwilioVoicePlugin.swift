@@ -81,6 +81,10 @@ enum AudioOutputRouteSupport {
 
         return fallbackOutput
     }
+
+    static func shouldApplyDefaultRoute(preferredOutput: String?) -> Bool {
+        preferredOutput == nil
+    }
 }
 
 public protocol PushKitEventDelegate: AnyObject {
@@ -99,7 +103,7 @@ public protocol PushKitEventDelegate: AnyObject {
 @objc(CapacitorTwilioVoicePlugin)
 public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEventDelegate {
       // @release
-    private let pluginVersion: String = "7.7.21"
+    private let pluginVersion: String = "7.7.22"
 
     public let identifier = "CapacitorTwilioVoicePlugin"
     public let jsName = "CapacitorTwilioVoice"
@@ -1566,8 +1570,9 @@ extension CapacitorTwilioVoicePlugin: CallDelegate {
     public func callDidStartRinging(call: Call) {
         notifyListeners("callRinging", data: ["callSid": call.uuid!.uuidString])
 
-        // Ensure audio is routed to earpiece during ringing (not speaker)
-        toggleAudioRoute(toSpeaker: false)
+        if AudioOutputRouteSupport.shouldApplyDefaultRoute(preferredOutput: preferredAudioOutput) {
+            toggleAudioRoute(toSpeaker: false)
+        }
 
         if playCustomRingback {
             playRingback()
