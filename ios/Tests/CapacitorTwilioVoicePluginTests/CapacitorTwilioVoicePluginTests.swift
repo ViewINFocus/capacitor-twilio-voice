@@ -12,4 +12,14 @@ class CapacitorTwilioVoiceTests: XCTestCase {
 
         XCTAssertEqual(value, result)
     }
+
+    func testExplicitEarpiecePreferenceWinsWhileBluetoothIsAvailable() {
+        let output = AudioOutputRouteSupport.resolvedOutput(
+            preferredOutput: audioOutputEarpiece,
+            availableOutputTypes: [audioOutputEarpiece, audioOutputSpeaker, audioOutputBluetooth],
+            fallbackOutput: audioOutputBluetooth
+        )
+
+        XCTAssertEqual(audioOutputEarpiece, output)
+    }
 }

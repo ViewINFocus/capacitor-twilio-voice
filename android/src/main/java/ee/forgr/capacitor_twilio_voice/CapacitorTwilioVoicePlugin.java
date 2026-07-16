@@ -80,7 +80,7 @@ import org.json.JSONObject;
 )
 public class CapacitorTwilioVoicePlugin extends Plugin {
     // @release
-    private final String pluginVersion = "7.7.20";
+    private final String pluginVersion = "7.7.21";
 
     private static final String TAG = "CapacitorTwilioVoice";
     private static final String PREF_ACCESS_TOKEN = "twilio_access_token";
