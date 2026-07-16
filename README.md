@@ -556,9 +556,14 @@ Common error scenarios:
 * [`endCall(...)`](#endcall)
 * [`muteCall(...)`](#mutecall)
 * [`setSpeaker(...)`](#setspeaker)
+* [`setAudioOutput(...)`](#setaudiooutput)
+* [`setProximityMonitoring(...)`](#setproximitymonitoring)
+* [`sendDigits(...)`](#senddigits)
 * [`getCallStatus()`](#getcallstatus)
 * [`checkMicrophonePermission()`](#checkmicrophonepermission)
 * [`requestMicrophonePermission()`](#requestmicrophonepermission)
+* [`checkBluetoothPermission()`](#checkbluetoothpermission)
+* [`requestBluetoothPermission()`](#requestbluetoothpermission)
 * [`addListener('callInviteReceived', ...)`](#addlistenercallinvitereceived-)
 * [`addListener('callConnected', ...)`](#addlistenercallconnected-)
 * [`addListener('callInviteCancelled', ...)`](#addlistenercallinvitecancelled-)
@@ -568,6 +573,7 @@ Common error scenarios:
 * [`addListener('callRinging', ...)`](#addlistenercallringing-)
 * [`addListener('callReconnecting', ...)`](#addlistenercallreconnecting-)
 * [`addListener('callReconnected', ...)`](#addlistenercallreconnected-)
+* [`addListener('audioOutputChanged', ...)`](#addlisteneraudiooutputchanged-)
 * [`addListener('callQualityWarningsChanged', ...)`](#addlistenercallqualitywarningschanged-)
 * [`addListener('registrationSuccess', ...)`](#addlistenerregistrationsuccess-)
 * [`addListener('registrationFailure', ...)`](#addlistenerregistrationfailure-)
@@ -730,7 +736,7 @@ When muted, the other party will not hear audio from your microphone.
 ### setSpeaker(...)
 
 ```typescript
-setSpeaker(options: { enabled: boolean; }) => Promise<{ success: boolean; }>
+setSpeaker(options: { enabled: boolean; }) => Promise<AudioOutputStatus>
 ```
 
 Enable or disable speakerphone mode.
@@ -741,7 +747,59 @@ When enabled, audio will be routed through the device's speaker instead of the e
 | ------------- | ---------------------------------- | ---------------------- |
 | **`options`** | <code>{ enabled: boolean; }</code> | - Configuration object |
 
+**Returns:** <code>Promise&lt;<a href="#audiooutputstatus">AudioOutputStatus</a>&gt;</code>
+
+--------------------
+
+
+### setAudioOutput(...)
+
+```typescript
+setAudioOutput(options: { output: AudioOutputType; }) => Promise<AudioOutputStatus>
+```
+
+Explicitly select the active audio output for the current call.
+
+| Param         | Type                                                                     | Description            |
+| ------------- | ------------------------------------------------------------------------ | ---------------------- |
+| **`options`** | <code>{ output: <a href="#audiooutputtype">AudioOutputType</a>; }</code> | - Configuration object |
+
+**Returns:** <code>Promise&lt;<a href="#audiooutputstatus">AudioOutputStatus</a>&gt;</code>
+
+--------------------
+
+
+### setProximityMonitoring(...)
+
+```typescript
+setProximityMonitoring(options: { enabled: boolean; }) => Promise<{ success: boolean; }>
+```
+
+Enable or disable proximity monitoring during a call.
+
+When enabled, the native layer can turn off the screen while the device is near
+the user's face to help prevent accidental taps during voice calls.
+
+| Param         | Type                               | Description            |
+| ------------- | ---------------------------------- | ---------------------- |
+| **`options`** | <code>{ enabled: boolean; }</code> | - Configuration object |
+
 **Returns:** <code>Promise&lt;{ success: boolean; }&gt;</code>
+
+--------------------
+
+
+### sendDigits(...)
+
+```typescript
+sendDigits(options: { digits: string; callSid?: string; }) => Promise<void>
+```
+
+Send DTMF digits during an active call.
+
+| Param         | Type                                               | Description            |
+| ------------- | -------------------------------------------------- | ---------------------- |
+| **`options`** | <code>{ digits: string; callSid?: string; }</code> | - Configuration object |
 
 --------------------
 
@@ -749,7 +807,7 @@ When enabled, audio will be routed through the device's speaker instead of the e
 ### getCallStatus()
 
 ```typescript
-getCallStatus() => Promise<{ hasActiveCall: boolean; isOnHold: boolean; isMuted: boolean; callSid?: string; callState?: string; pendingInvites: CallInvite[]; activeCallsCount: number; }>
+getCallStatus() => Promise<{ hasActiveCall: boolean; isOnHold: boolean; isMuted: boolean; callSid?: string; callState?: string; audioOutput?: AudioOutputType | null; availableAudioOutputs: AudioOutputOption[]; pendingInvites: CallInvite[]; activeCallsCount: number; }>
 ```
 
 Get the current status of the active call.
@@ -757,7 +815,7 @@ Get the current status of the active call.
 This provides real-time information about the call state, mute status,
 hold status, and call identifiers.
 
-**Returns:** <code>Promise&lt;{ hasActiveCall: boolean; isOnHold: boolean; isMuted: boolean; callSid?: string; callState?: string; pendingInvites: CallInvite[]; activeCallsCount: number; }&gt;</code>
+**Returns:** <code>Promise&lt;{ hasActiveCall: boolean; isOnHold: boolean; isMuted: boolean; callSid?: string; callState?: string; audioOutput?: <a href="#audiooutputtype">AudioOutputType</a> | null; availableAudioOutputs: AudioOutputOption[]; pendingInvites: CallInvite[]; activeCallsCount: number; }&gt;</code>
 
 --------------------
 
@@ -788,6 +846,36 @@ Request microphone permission from the user.
 On iOS and Android, this will show the system permission dialog if permission
 has not been granted yet. If permission was previously denied, the user may need
 to grant it in system settings.
+
+**Returns:** <code>Promise&lt;{ granted: boolean; }&gt;</code>
+
+--------------------
+
+
+### checkBluetoothPermission()
+
+```typescript
+checkBluetoothPermission() => Promise<{ granted: boolean; }>
+```
+
+Check whether Bluetooth headset access is available.
+
+Android 12 and newer require BLUETOOTH_CONNECT at runtime. iOS audio routing
+does not require a separate runtime Bluetooth permission and returns true.
+
+**Returns:** <code>Promise&lt;{ granted: boolean; }&gt;</code>
+
+--------------------
+
+
+### requestBluetoothPermission()
+
+```typescript
+requestBluetoothPermission() => Promise<{ granted: boolean; }>
+```
+
+Request optional Bluetooth headset access without changing microphone permission.
+Denial must not prevent earpiece or speaker calls.
 
 **Returns:** <code>Promise&lt;{ granted: boolean; }&gt;</code>
 
@@ -981,6 +1069,27 @@ Audio should resume normally after this event.
 --------------------
 
 
+### addListener('audioOutputChanged', ...)
+
+```typescript
+addListener(eventName: 'audioOutputChanged', listenerFunc: (data: { audioOutput: AudioOutputType | null; outputType: AudioOutputType | null; availableAudioOutputs: AudioOutputOption[]; }) => void) => Promise<PluginListenerHandle>
+```
+
+Listen for resolved audio output changes.
+
+This event is fired after the native layer finishes switching to a different
+audio route, such as earpiece, speaker, Bluetooth, or a wired headset.
+
+| Param              | Type                                                                                                                                                                                                                     | Description                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| **`eventName`**    | <code>'audioOutputChanged'</code>                                                                                                                                                                                        | - The event name ('audioOutputChanged') |
+| **`listenerFunc`** | <code>(data: { audioOutput: <a href="#audiooutputtype">AudioOutputType</a> \| null; outputType: <a href="#audiooutputtype">AudioOutputType</a> \| null; availableAudioOutputs: AudioOutputOption[]; }) =&gt; void</code> | - Callback function to handle the event |
+
+**Returns:** <code>Promise&lt;<a href="#pluginlistenerhandle">PluginListenerHandle</a>&gt;</code>
+
+--------------------
+
+
 ### addListener('callQualityWarningsChanged', ...)
 
 ```typescript
@@ -1076,6 +1185,23 @@ Get the native Capacitor plugin version
 ### Interfaces
 
 
+#### AudioOutputStatus
+
+| Prop                        | Type                                                                |
+| --------------------------- | ------------------------------------------------------------------- |
+| **`success`**               | <code>boolean</code>                                                |
+| **`audioOutput`**           | <code><a href="#audiooutputtype">AudioOutputType</a> \| null</code> |
+| **`availableAudioOutputs`** | <code>AudioOutputOption[]</code>                                    |
+
+
+#### AudioOutputOption
+
+| Prop        | Type                                                        | Description                                         |
+| ----------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| **`type`**  | <code><a href="#audiooutputtype">AudioOutputType</a></code> | Stable output identifier used by the native plugin. |
+| **`label`** | <code>string</code>                                         | Human-readable label for the device or route.       |
+
+
 #### CallInvite
 
 Represents a pending incoming call invitation.
@@ -1100,6 +1226,11 @@ but not yet accepted or rejected. The same structure is used both in the
 
 
 ### Type Aliases
+
+
+#### AudioOutputType
+
+<code>'earpiece' | 'speaker' | 'bluetooth' | 'wired'</code>
 
 
 #### Record

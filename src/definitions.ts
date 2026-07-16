@@ -69,6 +69,12 @@ export interface AudioOutputOption {
   label: string;
 }
 
+export interface AudioOutputStatus {
+  success: boolean;
+  audioOutput: AudioOutputType | null;
+  availableAudioOutputs: AudioOutputOption[];
+}
+
 export interface CapacitorTwilioVoicePlugin {
   // Authentication
 
@@ -290,8 +296,8 @@ export interface CapacitorTwilioVoicePlugin {
    *   enabled: false
    * });
    * ```
-  */
-  setSpeaker(options: { enabled: boolean }): Promise<{ success: boolean }>;
+   */
+  setSpeaker(options: { enabled: boolean }): Promise<AudioOutputStatus>;
 
   /**
    * Explicitly select the active audio output for the current call.
@@ -300,13 +306,7 @@ export interface CapacitorTwilioVoicePlugin {
    * @param options.output - Desired audio route (earpiece, speaker, bluetooth, or wired)
    * @returns Promise that resolves with the selected output and the currently available outputs
    */
-  setAudioOutput(options: {
-    output: AudioOutputType;
-  }): Promise<{
-    success: boolean;
-    audioOutput: AudioOutputType | null;
-    availableAudioOutputs: AudioOutputOption[];
-  }>;
+  setAudioOutput(options: { output: AudioOutputType }): Promise<AudioOutputStatus>;
 
   /**
    * Enable or disable proximity monitoring during a call.
@@ -431,6 +431,20 @@ export interface CapacitorTwilioVoicePlugin {
    * ```
    */
   requestMicrophonePermission(): Promise<{ granted: boolean }>;
+
+  /**
+   * Check whether Bluetooth headset access is available.
+   *
+   * Android 12 and newer require BLUETOOTH_CONNECT at runtime. iOS audio routing
+   * does not require a separate runtime Bluetooth permission and returns true.
+   */
+  checkBluetoothPermission(): Promise<{ granted: boolean }>;
+
+  /**
+   * Request optional Bluetooth headset access without changing microphone permission.
+   * Denial must not prevent earpiece or speaker calls.
+   */
+  requestBluetoothPermission(): Promise<{ granted: boolean }>;
 
   // Listeners for events
 
@@ -719,8 +733,8 @@ export interface CapacitorTwilioVoicePlugin {
   addListener(
     eventName: 'audioOutputChanged',
     listenerFunc: (data: {
-      audioOutput: AudioOutputType;
-      outputType: AudioOutputType;
+      audioOutput: AudioOutputType | null;
+      outputType: AudioOutputType | null;
       availableAudioOutputs: AudioOutputOption[];
     }) => void,
   ): Promise<PluginListenerHandle>;

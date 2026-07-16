@@ -22,7 +22,9 @@ import android.media.MediaPlayer;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -78,14 +80,13 @@ import org.json.JSONObject;
 )
 public class CapacitorTwilioVoicePlugin extends Plugin {
     // @release
-    private final String pluginVersion = "7.7.9";
+    private final String pluginVersion = "7.7.18";
 
     private static final String TAG = "CapacitorTwilioVoice";
     private static final String PREF_ACCESS_TOKEN = "twilio_access_token";
     private static final String PREF_FCM_TOKEN = "twilio_fcm_token";
     private static final String PREFS_NAME = "capacitor_twilio_voice_prefs";
     private static final String PREF_MIC_PERMISSION_REQUESTED = "mic_permission_requested";
-    private static final String PREF_BLUETOOTH_PERMISSION_REQUESTED = "bluetooth_permission_requested";
 
     public static CapacitorTwilioVoicePlugin instance;
 
@@ -116,6 +117,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
     // Permission handling
     private static final int REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT = 2001;
+    private static final int REQUEST_CODE_BLUETOOTH_CONNECT = 2002;
     private String pendingCallSidForPermission;
 
     private enum PendingPermissionAction {
@@ -129,6 +131,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private String pendingOutgoingTo;
     private String pendingOutgoingCallerId;
     private PluginCall pendingPermissionCall;
+    private PluginCall pendingBluetoothPermissionCall;
     private long permissionRequestTimestamp = 0L;
     private int permissionAttemptCount = 0;
     private boolean awaitingSettingsResult = false;
@@ -955,31 +958,16 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             PackageManager.PERMISSION_GRANTED;
     }
 
-    private boolean hasCallPermissions() {
-        return hasMicrophonePermission() && hasBluetoothPermission();
-    }
-
-    static List<String> getMissingCallPermissions(
-        boolean hasMicrophonePermission,
-        boolean hasBluetoothPermission,
-        boolean requiresBluetoothPermission
-    ) {
+    static List<String> getMissingMicrophonePermissions(boolean hasMicrophonePermission) {
         List<String> missingPermissions = new ArrayList<>();
         if (!hasMicrophonePermission) {
             missingPermissions.add(Manifest.permission.RECORD_AUDIO);
         }
-        if (requiresBluetoothPermission && !hasBluetoothPermission) {
-            missingPermissions.add(Manifest.permission.BLUETOOTH_CONNECT);
-        }
         return missingPermissions;
     }
 
-    private String[] getMissingCallPermissions() {
-        List<String> missingPermissions = getMissingCallPermissions(
-            hasMicrophonePermission(),
-            hasBluetoothPermission(),
-            requiresBluetoothPermission()
-        );
+    private String[] getMissingMicrophonePermissions() {
+        List<String> missingPermissions = getMissingMicrophonePermissions(hasMicrophonePermission());
         return missingPermissions.toArray(new String[0]);
     }
 
@@ -991,7 +979,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         Activity activity = getActivity();
         permissionRequestTimestamp = System.currentTimeMillis();
         permissionAttemptCount++;
-        String[] missingPermissions = getMissingCallPermissions();
+        String[] missingPermissions = getMissingMicrophonePermissions();
 
         if (activity != null) {
             activity.runOnUiThread(() -> {
@@ -1034,7 +1022,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     }
 
     private void handleMicPermissionResult(Map<String, Boolean> permissions) {
-        boolean granted = hasCallPermissions();
+        boolean granted = hasMicrophonePermission();
         Log.d(
             TAG,
             "handleMicPermissionResult: granted=" +
@@ -1141,8 +1129,8 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private void showPermissionRationaleDialog(Activity activity) {
         Log.d(TAG, "showPermissionRationaleDialog");
         new AlertDialog.Builder(activity)
-            .setTitle("Call Permissions Required")
-            .setMessage("Microphone access is required to place and receive calls. Bluetooth access is also needed for connected headsets on Android 12+.")
+            .setTitle("Microphone Permission Required")
+            .setMessage("Microphone access is required to place and receive calls.")
             .setPositiveButton("Retry", (dialog, which) -> {
                 dialog.dismiss();
                 requestMicrophonePermission();
@@ -1158,8 +1146,8 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private void showStandalonePermissionRationaleDialog(Activity activity, PluginCall call) {
         Log.d(TAG, "showStandalonePermissionRationaleDialog");
         new AlertDialog.Builder(activity)
-            .setTitle("Call Permissions Required")
-            .setMessage("Microphone access is required to place and receive calls. Bluetooth access is also needed for connected headsets on Android 12+.")
+            .setTitle("Microphone Permission Required")
+            .setMessage("Microphone access is required to place and receive calls.")
             .setPositiveButton("Retry", (dialog, which) -> {
                 dialog.dismiss();
                 requestMicrophonePermission();
@@ -1181,8 +1169,8 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private void showPermissionSettingsDialog(Activity activity) {
         Log.d(TAG, "showPermissionSettingsDialog");
         new AlertDialog.Builder(activity)
-            .setTitle("Enable Call Permissions")
-            .setMessage("You can enable microphone and Bluetooth access in Settings to use calling features and connected headsets.")
+            .setTitle("Enable Microphone Permission")
+            .setMessage("You can enable microphone access in Settings to place and receive calls.")
             .setPositiveButton("Open Settings", (dialog, which) -> {
                 dialog.dismiss();
                 ensureUnlockedThenOpenSettings();
@@ -1480,31 +1468,27 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     public void setSpeaker(PluginCall call) {
         boolean enabled = call.getBoolean("enabled", false);
 
-        try {
-            if (voiceCallService != null) {
-                if (enabled) {
-                    voiceCallService.selectAudioOutput(VoiceCallService.AUDIO_OUTPUT_SPEAKER);
-                } else {
-                    Intent serviceIntent = new Intent(getSafeContext(), VoiceCallService.class);
-                    serviceIntent.setAction(VoiceCallService.ACTION_SPEAKER_TOGGLE);
-                    serviceIntent.putExtra(VoiceCallService.EXTRA_SPEAKER_ENABLED, false);
-                    getSafeContext().startService(serviceIntent);
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                if (voiceCallService == null) {
+                    call.reject("Audio service is not ready");
+                    return;
                 }
-            } else {
-                Intent serviceIntent = new Intent(getSafeContext(), VoiceCallService.class);
-                serviceIntent.setAction(VoiceCallService.ACTION_SPEAKER_TOGGLE);
-                serviceIntent.putExtra(VoiceCallService.EXTRA_SPEAKER_ENABLED, enabled);
-                getSafeContext().startService(serviceIntent);
-            }
 
-            JSObject ret = new JSObject();
-            ret.put("success", true);
-            appendAudioOutputStatus(ret);
-            call.resolve(ret);
-        } catch (Exception e) {
-            Log.e(TAG, "Error setting speaker via service", e);
-            call.reject("Failed to set speaker: " + e.getMessage());
-        }
+                if (!voiceCallService.setSpeakerEnabled(enabled)) {
+                    call.reject("Requested audio output is not available");
+                    return;
+                }
+
+                JSObject ret = new JSObject();
+                ret.put("success", true);
+                appendAudioOutputStatus(ret);
+                call.resolve(ret);
+            } catch (Exception e) {
+                Log.e(TAG, "Error setting speaker via service", e);
+                call.reject("Failed to set speaker: " + e.getMessage());
+            }
+        });
     }
 
     @PluginMethod
@@ -1520,32 +1504,27 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             return;
         }
 
-        try {
-            boolean selected;
-            if (voiceCallService != null) {
-                selected = voiceCallService.selectAudioOutput(output);
-            } else {
-                Intent serviceIntent = new Intent(getSafeContext(), VoiceCallService.class);
-                serviceIntent.setAction(VoiceCallService.ACTION_SET_AUDIO_OUTPUT);
-                serviceIntent.putExtra(VoiceCallService.EXTRA_AUDIO_OUTPUT, output);
-                getSafeContext().startService(serviceIntent);
-                selected = true;
-            }
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                if (voiceCallService == null) {
+                    call.reject("Audio service is not ready");
+                    return;
+                }
 
-            if (!selected) {
-                call.reject("Requested audio output is not available");
-                return;
-            }
+                if (!voiceCallService.selectAudioOutput(output)) {
+                    call.reject("Requested audio output is not available");
+                    return;
+                }
 
-            JSObject ret = new JSObject();
-            ret.put("success", true);
-            appendAudioOutputStatus(ret);
-            ret.put("audioOutput", output);
-            call.resolve(ret);
-        } catch (Exception e) {
-            Log.e(TAG, "Error setting audio output", e);
-            call.reject("Failed to set audio output: " + e.getMessage());
-        }
+                JSObject ret = new JSObject();
+                ret.put("success", true);
+                appendAudioOutputStatus(ret);
+                call.resolve(ret);
+            } catch (Exception e) {
+                Log.e(TAG, "Error setting audio output", e);
+                call.reject("Failed to set audio output: " + e.getMessage());
+            }
+        });
     }
 
     @PluginMethod
@@ -1609,7 +1588,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
     @PluginMethod
     public void checkMicrophonePermission(PluginCall call) {
-        boolean hasPermission = hasCallPermissions();
+        boolean hasPermission = hasMicrophonePermission();
 
         JSObject ret = new JSObject();
         ret.put("granted", hasPermission);
@@ -1619,7 +1598,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     @PluginMethod
     public void requestMicrophonePermission(PluginCall call) {
         Log.d(TAG, "requestMicrophonePermission invoked");
-        if (hasCallPermissions()) {
+        if (hasMicrophonePermission()) {
             Log.d(TAG, "requestMicrophonePermission: already granted");
             JSObject ret = new JSObject();
             ret.put("granted", true);
@@ -1636,16 +1615,11 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         SharedPreferences prefs = getPrefs();
         boolean missingMicrophonePermission = !hasMicrophonePermission();
-        boolean missingBluetoothPermission = requiresBluetoothPermission() && !hasBluetoothPermission();
-        boolean requestedBefore =
-            (missingMicrophonePermission && prefs.getBoolean(PREF_MIC_PERMISSION_REQUESTED, false)) ||
-            (missingBluetoothPermission && prefs.getBoolean(PREF_BLUETOOTH_PERMISSION_REQUESTED, false));
+        boolean requestedBefore = missingMicrophonePermission && prefs.getBoolean(PREF_MIC_PERMISSION_REQUESTED, false);
         boolean shouldShow =
             (missingMicrophonePermission &&
-                ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)) ||
-            (missingBluetoothPermission &&
-                ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.BLUETOOTH_CONNECT));
-        String[] missingPermissions = getMissingCallPermissions();
+                ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO));
+        String[] missingPermissions = getMissingMicrophonePermissions();
         Log.d(
             TAG,
             "requestMicrophonePermission: requestedBefore=" +
@@ -1666,9 +1640,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         SharedPreferences.Editor prefsEditor = prefs.edit();
         if (missingMicrophonePermission) {
             prefsEditor.putBoolean(PREF_MIC_PERMISSION_REQUESTED, true);
-        }
-        if (missingBluetoothPermission) {
-            prefsEditor.putBoolean(PREF_BLUETOOTH_PERMISSION_REQUESTED, true);
         }
         prefsEditor.apply();
 
@@ -1692,11 +1663,22 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
 
+        if (requestCode == REQUEST_CODE_BLUETOOTH_CONNECT) {
+            JSObject ret = new JSObject();
+            ret.put("granted", hasBluetoothPermission());
+            if (pendingBluetoothPermissionCall != null) {
+                pendingBluetoothPermissionCall.setKeepAlive(false);
+                pendingBluetoothPermissionCall.resolve(ret);
+                pendingBluetoothPermissionCall = null;
+            }
+            return;
+        }
+
         if (requestCode != REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT) {
             return;
         }
 
-        boolean granted = hasCallPermissions();
+        boolean granted = hasMicrophonePermission();
         Log.d(
             TAG,
             "handleRequestPermissionsResult: granted=" +
@@ -1713,6 +1695,42 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         } else {
             handleMicrophonePermissionDenied();
         }
+    }
+
+    @PluginMethod
+    public void checkBluetoothPermission(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("granted", hasBluetoothPermission());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestBluetoothPermission(PluginCall call) {
+        if (hasBluetoothPermission()) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+            return;
+        }
+
+        Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("Unable to request Bluetooth permission without an active activity");
+            return;
+        }
+
+        if (pendingBluetoothPermissionCall != null) {
+            pendingBluetoothPermissionCall.setKeepAlive(false);
+            pendingBluetoothPermissionCall.reject("Another Bluetooth permission request is in progress");
+        }
+
+        pendingBluetoothPermissionCall = call;
+        call.setKeepAlive(true);
+        ActivityCompat.requestPermissions(
+            activity,
+            new String[] { Manifest.permission.BLUETOOTH_CONNECT },
+            REQUEST_CODE_BLUETOOTH_CONNECT
+        );
     }
 
     // Twilio Voice Listeners

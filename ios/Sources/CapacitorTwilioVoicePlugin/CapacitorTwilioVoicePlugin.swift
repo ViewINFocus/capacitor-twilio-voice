@@ -18,6 +18,59 @@ let audioOutputSpeaker = "speaker"
 let audioOutputBluetooth = "bluetooth"
 let audioOutputWired = "wired"
 
+enum AudioOutputRouteSupport {
+    static func shouldExposeEarpiece(
+        userInterfaceIdiom: UIUserInterfaceIdiom,
+        availableInputPortTypes: [AVAudioSession.Port],
+        currentOutputPortTypes: [AVAudioSession.Port],
+        currentInputPortTypes: [AVAudioSession.Port]
+    ) -> Bool {
+        if userInterfaceIdiom == .phone {
+            return true
+        }
+
+        return
+            availableInputPortTypes.contains(where: { $0 == .builtInMic }) ||
+            currentOutputPortTypes.contains(where: { $0 == .builtInReceiver }) ||
+            currentInputPortTypes.contains(where: { $0 == .builtInMic })
+    }
+
+    static func notificationSignature(
+        selectedOutput: String?,
+        availableOutputs: [[String: Any]]
+    ) -> String {
+        let selectedPart = selectedOutput ?? "none"
+        let outputsPart = availableOutputs.compactMap { output -> String? in
+            guard let type = output["type"] as? String else {
+                return nil
+            }
+
+            let label = output["label"] as? String ?? ""
+            return "\(type)=\(label)"
+        }.joined(separator: "|")
+
+        return "\(selectedPart)::\(outputsPart)"
+    }
+
+    static func eventPayload(
+        selectedOutput: String?,
+        availableOutputs: [[String: Any]]
+    ) -> [String: Any] {
+        let serializedOutput: Any
+        if let selectedOutput {
+            serializedOutput = selectedOutput
+        } else {
+            serializedOutput = NSNull()
+        }
+
+        return [
+            "audioOutput": serializedOutput,
+            "outputType": serializedOutput,
+            "availableAudioOutputs": availableOutputs,
+        ]
+    }
+}
+
 public protocol PushKitEventDelegate: AnyObject {
     func credentialsUpdated(credentials: PKPushCredentials)
     func credentialsInvalidated()
@@ -34,7 +87,7 @@ public protocol PushKitEventDelegate: AnyObject {
 @objc(CapacitorTwilioVoicePlugin)
 public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEventDelegate {
       // @release
-    private let pluginVersion: String = "7.7.9"
+    private let pluginVersion: String = "7.7.18"
 
     public let identifier = "CapacitorTwilioVoicePlugin"
     public let jsName = "CapacitorTwilioVoice"
@@ -55,6 +108,8 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         CAPPluginMethod(name: "getCallStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "checkMicrophonePermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestMicrophonePermission", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "checkBluetoothPermission", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestBluetoothPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getPluginVersion", returnType: CAPPluginReturnPromise)
     ]
 
@@ -72,6 +127,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
     private var playCustomRingback = false
     private var ringtonePlayer: AVAudioPlayer?
     private var proximityMonitoringEnabled = false
+    private var lastAudioOutputNotificationSignature: String?
     private struct PendingOutgoingCall {
         let to: String
         let completion: (Bool) -> Void
@@ -186,10 +242,16 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         let availableInputs = audioSession.availableInputs ?? []
         let currentRoute = audioSession.currentRoute
         var outputs: [[String: Any]] = []
+        let availableInputPortTypes = availableInputs.map(\.portType)
+        let currentOutputPortTypes = currentRoute.outputs.map(\.portType)
+        let currentInputPortTypes = currentRoute.inputs.map(\.portType)
 
-        if availableInputs.contains(where: { $0.portType == .builtInMic }) ||
-            currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) ||
-            currentRoute.inputs.contains(where: { $0.portType == .builtInMic }) {
+        if AudioOutputRouteSupport.shouldExposeEarpiece(
+            userInterfaceIdiom: UIDevice.current.userInterfaceIdiom,
+            availableInputPortTypes: availableInputPortTypes,
+            currentOutputPortTypes: currentOutputPortTypes,
+            currentInputPortTypes: currentInputPortTypes
+        ) {
             outputs.append([
                 "type": audioOutputEarpiece,
                 "label": audioOutputLabel(for: nil, type: audioOutputEarpiece),
@@ -271,8 +333,11 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             try audioSession.setPreferredInput(nil)
             try audioSession.overrideOutputAudioPort(.speaker)
         case audioOutputEarpiece:
-            try audioSession.setPreferredInput(preferredInput(for: output, availableInputs: availableInputs))
             try audioSession.overrideOutputAudioPort(.none)
+            try audioSession.setPreferredInput(nil)
+            if let builtInMic = preferredInput(for: output, availableInputs: availableInputs) {
+                try audioSession.setPreferredInput(builtInMic)
+            }
         case audioOutputBluetooth, audioOutputWired:
             guard let selectedInput = preferredInput(for: output, availableInputs: availableInputs) else {
                 throw NSError(
@@ -323,6 +388,13 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
             name: AVAudioSession.interruptionNotification,
             object: nil
         )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
     }
 
     @objc private func handleMediaServicesReset() {
@@ -334,6 +406,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
 
         // Notify listeners about the reset
         notifyListeners("audioSessionReset", data: nil)
+        notifyAudioOutputChangedIfNeeded(force: true)
     }
 
     @objc private func handleAudioSessionInterruption(notification: Notification) {
@@ -361,6 +434,7 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
                         audioDevice.isEnabled = true
                         NSLog("Audio session resumed after interruption")
                         notifyListeners("audioSessionResumed", data: nil)
+                        notifyAudioOutputChangedIfNeeded(force: true)
                     } catch {
                         NSLog("Failed to resume audio session: \(error.localizedDescription)")
                     }
@@ -372,6 +446,17 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
         @unknown default:
             break
         }
+    }
+
+    @objc private func handleAudioRouteChange(notification: Notification) {
+        if let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+           let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) {
+            NSLog("Audio route changed: \(reason.rawValue)")
+        } else {
+            NSLog("Audio route changed")
+        }
+
+        notifyAudioOutputChangedIfNeeded()
     }
 
     private func isTokenValid(_ token: String) -> Bool {
@@ -774,10 +859,12 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
 
         do {
             try applyAudioOutputWithRecovery(enabled ? audioOutputSpeaker : audioOutputEarpiece)
+            let status = currentAudioOutputStatus()
+            notifyAudioOutputChangedIfNeeded(status: status)
             call.resolve([
                 "success": true,
-                "audioOutput": currentAudioOutput() as Any,
-                "availableAudioOutputs": availableAudioOutputs(),
+                "audioOutput": status["audioOutput"] as Any,
+                "availableAudioOutputs": status["availableAudioOutputs"] as Any,
             ])
         } catch {
             call.reject("Failed to set speaker: \(error.localizedDescription)")
@@ -792,10 +879,12 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
 
         do {
             try applyAudioOutputWithRecovery(output)
+            let status = currentAudioOutputStatus()
+            notifyAudioOutputChangedIfNeeded(status: status)
             call.resolve([
                 "success": true,
-                "audioOutput": currentAudioOutput() as Any,
-                "availableAudioOutputs": availableAudioOutputs(),
+                "audioOutput": status["audioOutput"] as Any,
+                "availableAudioOutputs": status["availableAudioOutputs"] as Any,
             ])
         } catch {
             call.reject("Failed to set audio output: \(error.localizedDescription)")
@@ -876,6 +965,41 @@ public class CapacitorTwilioVoicePlugin: CAPPlugin, CAPBridgedPlugin, PushKitEve
                 call.resolve(["granted": granted])
             }
         }
+    }
+
+    @objc func checkBluetoothPermission(_ call: CAPPluginCall) {
+        call.resolve(["granted": true])
+    }
+
+    @objc func requestBluetoothPermission(_ call: CAPPluginCall) {
+        call.resolve(["granted": true])
+    }
+
+    private func currentAudioOutputStatus() -> [String: Any] {
+        AudioOutputRouteSupport.eventPayload(
+            selectedOutput: currentAudioOutput(),
+            availableOutputs: availableAudioOutputs()
+        )
+    }
+
+    private func notifyAudioOutputChangedIfNeeded(
+        force: Bool = false,
+        status: [String: Any]? = nil
+    ) {
+        let resolvedStatus = status ?? currentAudioOutputStatus()
+        let selectedOutput = resolvedStatus["audioOutput"] as? String
+        let availableOutputs = resolvedStatus["availableAudioOutputs"] as? [[String: Any]] ?? []
+        let signature = AudioOutputRouteSupport.notificationSignature(
+            selectedOutput: selectedOutput,
+            availableOutputs: availableOutputs
+        )
+
+        if !force && signature == lastAudioOutputNotificationSignature {
+            return
+        }
+
+        lastAudioOutputNotificationSignature = signature
+        notifyListeners("audioOutputChanged", data: resolvedStatus)
     }
 
     // MARK: - Helper Methods
