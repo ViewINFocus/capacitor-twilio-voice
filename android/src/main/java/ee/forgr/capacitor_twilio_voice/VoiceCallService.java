@@ -64,11 +64,15 @@ public class VoiceCallService extends Service {
     private boolean isCallMuted = false;
     private boolean isAudioSwitchActivated = false;
     private boolean isSpeakerEnabled = false;
+    private boolean isSelectingAudioOutput = false;
     private final Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+
     @Nullable
     private String preferredAudioOutput;
+
     @Nullable
     private String lastNotifiedAudioOutput;
+
     private String currentCallSid;
     private VoiceCallServiceListener serviceListener;
 
@@ -195,7 +199,7 @@ public class VoiceCallService extends Service {
             for (AudioDevice device : audioDevices) {
                 addPreferredAudioOutput(availableOutputs, getAudioOutputType(device));
             }
-            if (shouldReapplyPreferredAudioOutput(availableOutputs, selectedOutput, preferredAudioOutput)) {
+            if (shouldReapplyPreferredAudioOutput(availableOutputs, selectedOutput, preferredAudioOutput, isSelectingAudioOutput)) {
                 applyPreferredAudioDeviceOnMainThread();
             }
             notifyAudioOutputChangedIfNeeded(selectedOutput);
@@ -469,11 +473,15 @@ public class VoiceCallService extends Service {
     static boolean shouldReapplyPreferredAudioOutput(
         List<String> availableOutputs,
         @Nullable String selectedOutput,
-        @Nullable String preferredOutput
+        @Nullable String preferredOutput,
+        boolean isSelectingAudioOutput
     ) {
-        return preferredOutput != null &&
+        return (
+            !isSelectingAudioOutput &&
+            preferredOutput != null &&
             availableOutputs.contains(preferredOutput) &&
-            !preferredOutput.equals(selectedOutput);
+            !preferredOutput.equals(selectedOutput)
+        );
     }
 
     @Nullable
@@ -541,10 +549,15 @@ public class VoiceCallService extends Service {
             return;
         }
 
-        audioSwitch.selectDevice(device);
-        selectedAudioDevice = device;
         preferredAudioOutput = requestedOutput;
         isSpeakerEnabled = AUDIO_OUTPUT_SPEAKER.equals(selectedOutput);
+        isSelectingAudioOutput = true;
+        try {
+            audioSwitch.selectDevice(device);
+            selectedAudioDevice = device;
+        } finally {
+            isSelectingAudioOutput = false;
+        }
         Log.d(TAG, "Audio device changed to: " + device.getName());
         notifyAudioOutputChangedIfNeeded(selectedOutput);
     }
