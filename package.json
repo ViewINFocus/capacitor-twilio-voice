@@ -1,6 +1,6 @@
 {
   "name": "@capgo/capacitor-twilio-voice",
-  "version": "7.7.22",
+  "version": "8.7.22",
   "description": "Integrates the Twilio Voice SDK into Capacitor",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -56,10 +56,10 @@
     "update:tag": "node -e \"const v=require('./package.json').version; const {execSync}=require('child_process'); execSync(`git tag -a v${v} -m \\\"v${v}\\\"`, {stdio:'inherit'}); execSync(`git push origin v${v}`, {stdio:'inherit'}); execSync('git ls-remote --tags origin', {stdio:'inherit'});\""
   },
   "devDependencies": {
-    "@capacitor/android": "^7.0.0",
-    "@capacitor/core": "^7.0.0",
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
     "@capacitor/docgen": "^0.3.1",
-    "@capacitor/ios": "^7.0.0",
+    "@capacitor/ios": "^8.0.0",
     "@ionic/eslint-config": "^0.4.0",
     "@ionic/prettier-config": "^4.0.0",
     "@ionic/swiftlint-config": "^2.0.0",
@@ -76,7 +76,7 @@
     "prettier-pretty-check": "^0.2.0"
   },
   "peerDependencies": {
-    "@capacitor/core": ">=7.0.0"
+    "@capacitor/core": "^8.0.0"
   },
   "prettier": "@ionic/prettier-config",
   "swiftlint": "@ionic/swiftlint-config",
