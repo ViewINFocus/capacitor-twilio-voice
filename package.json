@@ -76,7 +76,7 @@
     "prettier-pretty-check": "^0.2.0"
   },
   "peerDependencies": {
-    "@capacitor/core": "^8.0.0"
+    "@capacitor/core": ">=8.0.0"
   },
   "prettier": "@ionic/prettier-config",
   "swiftlint": "@ionic/swiftlint-config",
