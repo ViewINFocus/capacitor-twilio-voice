@@ -25,7 +25,7 @@ public class VoiceFirebaseMessagingService extends FirebaseMessagingService impl
     public void onNewToken(@NonNull String token) {
         super.onNewToken(token);
         Log.d(TAG, "New FCM token: " + token);
-        // Token refresh is handled in the plugin's initializeFCM method
+        forwardToPushNotifications("onNewToken", String.class, token);
     }
 
     @Override
@@ -53,6 +53,19 @@ public class VoiceFirebaseMessagingService extends FirebaseMessagingService impl
 
         // Only call super for non-Twilio messages
         super.onMessageReceived(remoteMessage);
+        forwardToPushNotifications("sendRemoteMessage", RemoteMessage.class, remoteMessage);
+    }
+
+    private void forwardToPushNotifications(String method, Class<?> parameterType, Object value) {
+        try {
+            Class.forName("com.capacitorjs.plugins.pushnotifications.PushNotificationsPlugin")
+                .getMethod(method, parameterType)
+                .invoke(null, value);
+        } catch (ClassNotFoundException ignored) {
+            // Capacitor Push Notifications is optional for Voice-only apps.
+        } catch (ReflectiveOperationException | SecurityException | LinkageError error) {
+            Log.e(TAG, "Unable to forward Firebase event to Capacitor Push Notifications", error);
+        }
     }
 
     // MessageListener implementation
