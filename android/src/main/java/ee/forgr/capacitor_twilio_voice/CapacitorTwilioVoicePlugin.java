@@ -175,9 +175,12 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         @Override
         public void onCallDisconnected(Call call, CallException error) {
-            activeCall = null;
+            boolean isCurrentCall = activeCall == null || activeCall == call;
+            if (isCurrentCall) {
+                activeCall = null;
+                setProximityMonitoringEnabled(false);
+            }
             activeCalls.remove(call.getSid());
-            setProximityMonitoringEnabled(false);
 
             JSObject data = new JSObject();
             data.put("callSid", call.getSid());

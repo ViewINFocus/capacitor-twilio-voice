@@ -742,6 +742,14 @@ public class VoiceCallService extends Service {
         public void onConnectFailure(Call call, CallException error) {
             Log.e(TAG, "Call connect failure: " + call.getSid() + (error != null ? " Error: " + error.getMessage() : ""));
 
+            if (isSupersededCall(call)) {
+                Log.w(TAG, "Connect failure for a previous call; keeping the current call: " + call.getSid());
+                if (serviceListener != null) {
+                    serviceListener.onCallDisconnected(call, error);
+                }
+                return;
+            }
+
             activeCall = null;
             currentCallSid = null;
             resetAudioOutputState();
@@ -778,6 +786,14 @@ public class VoiceCallService extends Service {
         @Override
         public void onDisconnected(Call call, CallException error) {
             Log.d(TAG, "Call disconnected: " + call.getSid() + (error != null ? " Error: " + error.getMessage() : ""));
+
+            if (isSupersededCall(call)) {
+                Log.w(TAG, "Disconnect for a previous call; keeping the current call: " + call.getSid());
+                if (serviceListener != null) {
+                    serviceListener.onCallDisconnected(call, error);
+                }
+                return;
+            }
 
             activeCall = null;
             currentCallSid = null;
@@ -825,6 +841,11 @@ public class VoiceCallService extends Service {
             }
         }
     };
+
+    /** A newer call replaced this one (back-to-back dialing); its late events must not tear down the current call. */
+    private boolean isSupersededCall(Call call) {
+        return activeCall != null && activeCall != call;
+    }
 
     // Public methods for controlling the call
     public Call getActiveCall() {
