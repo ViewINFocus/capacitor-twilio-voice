@@ -136,6 +136,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private int permissionAttemptCount = 0;
     private boolean awaitingSettingsResult = false;
     private ActivityResultLauncher<String[]> micPermissionLauncher;
+    private ActivityResultLauncher<String> bluetoothPermissionLauncher;
 
     // Voice Call Service
     private VoiceCallService voiceCallService;
@@ -382,6 +383,12 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             new ActivityResultContracts.RequestMultiplePermissions(),
             (permissions) -> handleMicPermissionResult(permissions)
         );
+        // Capacitor never routes raw ActivityCompat.requestPermissions results to @CapacitorPlugin plugins,
+        // so permission prompts must go through registered launchers or the JS promise never settles.
+        bluetoothPermissionLauncher = getBridge().registerForActivityResult(
+            new ActivityResultContracts.RequestPermission(),
+            (granted) -> resolvePendingBluetoothPermission()
+        );
     }
 
     private void bindToVoiceCallService() {
@@ -517,6 +524,10 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
                 ", pendingAction=" +
                 pendingPermissionAction
         );
+        // Backup for a lost launcher result; a denial is still reported by the launcher callback.
+        if (pendingBluetoothPermissionCall != null && hasBluetoothPermission()) {
+            resolvePendingBluetoothPermission();
+        }
         if (hasMicrophonePermission()) {
             if (pendingPermissionAction != PendingPermissionAction.NONE || pendingPermissionCall != null) {
                 awaitingSettingsResult = false;
@@ -1667,13 +1678,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == REQUEST_CODE_BLUETOOTH_CONNECT) {
-            JSObject ret = new JSObject();
-            ret.put("granted", hasBluetoothPermission());
-            if (pendingBluetoothPermissionCall != null) {
-                pendingBluetoothPermissionCall.setKeepAlive(false);
-                pendingBluetoothPermissionCall.resolve(ret);
-                pendingBluetoothPermissionCall = null;
-            }
+            resolvePendingBluetoothPermission();
             return;
         }
 
@@ -1729,11 +1734,30 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         pendingBluetoothPermissionCall = call;
         call.setKeepAlive(true);
-        ActivityCompat.requestPermissions(
-            activity,
-            new String[] { Manifest.permission.BLUETOOTH_CONNECT },
-            REQUEST_CODE_BLUETOOTH_CONNECT
-        );
+        Log.d(TAG, "requestBluetoothPermission: requesting BLUETOOTH_CONNECT");
+        if (bluetoothPermissionLauncher != null) {
+            bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT);
+        } else {
+            ActivityCompat.requestPermissions(
+                activity,
+                new String[] { Manifest.permission.BLUETOOTH_CONNECT },
+                REQUEST_CODE_BLUETOOTH_CONNECT
+            );
+        }
+    }
+
+    private void resolvePendingBluetoothPermission() {
+        if (pendingBluetoothPermissionCall == null) {
+            return;
+        }
+        boolean granted = hasBluetoothPermission();
+        Log.d(TAG, "resolvePendingBluetoothPermission: granted=" + granted);
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        PluginCall call = pendingBluetoothPermissionCall;
+        pendingBluetoothPermissionCall = null;
+        call.setKeepAlive(false);
+        call.resolve(ret);
     }
 
     // Twilio Voice Listeners
