@@ -117,7 +117,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
     // Permission handling
     private static final int REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT = 2001;
-    private static final int REQUEST_CODE_BLUETOOTH_CONNECT = 2002;
     private String pendingCallSidForPermission;
 
     private enum PendingPermissionAction {
@@ -136,6 +135,7 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     private int permissionAttemptCount = 0;
     private boolean awaitingSettingsResult = false;
     private ActivityResultLauncher<String[]> micPermissionLauncher;
+    private ActivityResultLauncher<String> bluetoothPermissionLauncher;
 
     // Voice Call Service
     private VoiceCallService voiceCallService;
@@ -382,6 +382,12 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             new ActivityResultContracts.RequestMultiplePermissions(),
             (permissions) -> handleMicPermissionResult(permissions)
         );
+        // Capacitor never routes raw ActivityCompat.requestPermissions results to @CapacitorPlugin plugins,
+        // so permission prompts must go through registered launchers or the JS promise never settles.
+        bluetoothPermissionLauncher = getBridge().registerForActivityResult(
+            new ActivityResultContracts.RequestPermission(),
+            (granted) -> resolvePendingBluetoothPermission()
+        );
     }
 
     private void bindToVoiceCallService() {
@@ -497,6 +503,13 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         dismissIncomingCallNotification();
         setProximityMonitoringEnabled(false);
 
+        if (pendingBluetoothPermissionCall != null) {
+            PluginCall call = pendingBluetoothPermissionCall;
+            pendingBluetoothPermissionCall = null;
+            call.setKeepAlive(false);
+            call.reject("Bluetooth permission request cancelled: activity destroyed");
+        }
+
         // Clear plugin instance
         instance = null;
 
@@ -517,6 +530,10 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
                 ", pendingAction=" +
                 pendingPermissionAction
         );
+        // Backup for a lost launcher result; a denial is still reported by the launcher callback.
+        if (pendingBluetoothPermissionCall != null && hasBluetoothPermission()) {
+            resolvePendingBluetoothPermission();
+        }
         if (hasMicrophonePermission()) {
             if (pendingPermissionAction != PendingPermissionAction.NONE || pendingPermissionCall != null) {
                 awaitingSettingsResult = false;
@@ -1666,17 +1683,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
 
-        if (requestCode == REQUEST_CODE_BLUETOOTH_CONNECT) {
-            JSObject ret = new JSObject();
-            ret.put("granted", hasBluetoothPermission());
-            if (pendingBluetoothPermissionCall != null) {
-                pendingBluetoothPermissionCall.setKeepAlive(false);
-                pendingBluetoothPermissionCall.resolve(ret);
-                pendingBluetoothPermissionCall = null;
-            }
-            return;
-        }
-
         if (requestCode != REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT) {
             return;
         }
@@ -1722,6 +1728,11 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             return;
         }
 
+        if (bluetoothPermissionLauncher == null) {
+            call.reject("Bluetooth permission launcher is not registered");
+            return;
+        }
+
         if (pendingBluetoothPermissionCall != null) {
             pendingBluetoothPermissionCall.setKeepAlive(false);
             pendingBluetoothPermissionCall.reject("Another Bluetooth permission request is in progress");
@@ -1729,11 +1740,33 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         pendingBluetoothPermissionCall = call;
         call.setKeepAlive(true);
-        ActivityCompat.requestPermissions(
-            activity,
-            new String[] { Manifest.permission.BLUETOOTH_CONNECT },
-            REQUEST_CODE_BLUETOOTH_CONNECT
-        );
+        activity.runOnUiThread(() -> {
+            Log.d(TAG, "requestBluetoothPermission: requesting BLUETOOTH_CONNECT");
+            try {
+                bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT);
+            } catch (Exception e) {
+                Log.e(TAG, "requestBluetoothPermission: launch failed", e);
+                if (pendingBluetoothPermissionCall == call) {
+                    pendingBluetoothPermissionCall = null;
+                    call.setKeepAlive(false);
+                    call.reject("Failed to request Bluetooth permission: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    private void resolvePendingBluetoothPermission() {
+        if (pendingBluetoothPermissionCall == null) {
+            return;
+        }
+        boolean granted = hasBluetoothPermission();
+        Log.d(TAG, "resolvePendingBluetoothPermission: granted=" + granted);
+        JSObject ret = new JSObject();
+        ret.put("granted", granted);
+        PluginCall call = pendingBluetoothPermissionCall;
+        pendingBluetoothPermissionCall = null;
+        call.setKeepAlive(false);
+        call.resolve(ret);
     }
 
     // Twilio Voice Listeners
