@@ -117,7 +117,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
     // Permission handling
     private static final int REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT = 2001;
-    private static final int REQUEST_CODE_BLUETOOTH_CONNECT = 2002;
     private String pendingCallSidForPermission;
 
     private enum PendingPermissionAction {
@@ -1677,11 +1676,6 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
     protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults);
 
-        if (requestCode == REQUEST_CODE_BLUETOOTH_CONNECT) {
-            resolvePendingBluetoothPermission();
-            return;
-        }
-
         if (requestCode != REQUEST_CODE_RECORD_AUDIO_FOR_ACCEPT) {
             return;
         }
@@ -1727,6 +1721,11 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
             return;
         }
 
+        if (bluetoothPermissionLauncher == null) {
+            call.reject("Bluetooth permission launcher is not registered");
+            return;
+        }
+
         if (pendingBluetoothPermissionCall != null) {
             pendingBluetoothPermissionCall.setKeepAlive(false);
             pendingBluetoothPermissionCall.reject("Another Bluetooth permission request is in progress");
@@ -1734,16 +1733,19 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
 
         pendingBluetoothPermissionCall = call;
         call.setKeepAlive(true);
-        Log.d(TAG, "requestBluetoothPermission: requesting BLUETOOTH_CONNECT");
-        if (bluetoothPermissionLauncher != null) {
-            bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT);
-        } else {
-            ActivityCompat.requestPermissions(
-                activity,
-                new String[] { Manifest.permission.BLUETOOTH_CONNECT },
-                REQUEST_CODE_BLUETOOTH_CONNECT
-            );
-        }
+        activity.runOnUiThread(() -> {
+            Log.d(TAG, "requestBluetoothPermission: requesting BLUETOOTH_CONNECT");
+            try {
+                bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT);
+            } catch (Exception e) {
+                Log.e(TAG, "requestBluetoothPermission: launch failed", e);
+                if (pendingBluetoothPermissionCall == call) {
+                    pendingBluetoothPermissionCall = null;
+                    call.setKeepAlive(false);
+                    call.reject("Failed to request Bluetooth permission: " + e.getMessage());
+                }
+            }
+        });
     }
 
     private void resolvePendingBluetoothPermission() {
