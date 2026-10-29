@@ -503,6 +503,13 @@ public class CapacitorTwilioVoicePlugin extends Plugin {
         dismissIncomingCallNotification();
         setProximityMonitoringEnabled(false);
 
+        if (pendingBluetoothPermissionCall != null) {
+            PluginCall call = pendingBluetoothPermissionCall;
+            pendingBluetoothPermissionCall = null;
+            call.setKeepAlive(false);
+            call.reject("Bluetooth permission request cancelled: activity destroyed");
+        }
+
         // Clear plugin instance
         instance = null;
 
